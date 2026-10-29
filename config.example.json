@@ -1,0 +1,75 @@
+{
+  "_comment": "复制为 config.json 后填写。所有 REPLACE_WITH_* 都必须替换；也可留空改用环境变量（见 .env.example）。config.json 含明文凭据，务必加入 .gitignore。",
+  "access_key": "REPLACE_WITH_RANDOM_32_CHARS",
+  "refreshOwner": "magpie",
+  "fallbackRefresh": true,
+  "magpieSyncAt": null,
+  "cloud": {
+    "_comment": "可选：云端事件库（Postgres 兼容 BaaS）。留空则只写本地 state.json，不影响签到。",
+    "endpoint": "",
+    "publishableKey": "",
+    "resourceId": ""
+  },
+  "accounts": [
+    {
+      "_comment": "WorkBuddy（codebuddy / workbuddy.cn）：签到 + 猫猫旅行 + 成长任务",
+      "name": "WB-主号",
+      "uid": "REPLACE_WITH_WORKBUDDY_UID",
+      "accessToken": "REPLACE_WITH_WORKBUDDY_ACCESS_TOKEN",
+      "refreshToken": "REPLACE_WITH_WORKBUDDY_REFRESH_TOKEN",
+      "expiresAt": 0,
+      "refreshExpiresAt": 0
+    }
+  ],
+  "trae": {
+    "_comment": "Trae CN（api.trae.cn）：每日签到领 100+100 credits。9074=该号无可信设备，9095=该设备当日名额被占。",
+    "accounts": [
+      {
+        "name": "Trae-主号",
+        "uid": "REPLACE_WITH_TRAE_UID",
+        "access": "REPLACE_WITH_TRAE_ACCESS_TOKEN",
+        "deviceId": "REPLACE_WITH_TRAE_DEVICE_ID",
+        "expires": 0,
+        "altDeviceIds": [],
+        "profile": {
+          "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "brand": "iCube",
+          "type": "Windows",
+          "os": "10.0.22631",
+          "appVersion": "0.1.69"
+        }
+      }
+    ]
+  },
+  "codearts": {
+    "_comment": "华为云码道（developcloud）：需要浏览器会话 Cookie，约 1~2 小时失效，只能人工粘贴。",
+    "accounts": [
+      {
+        "name": "码道-主号",
+        "cookie": "devclouddevuibjJ_SESSION_ID=REPLACE_WITH_SESSION_ID",
+        "sessionOkAt": null
+      }
+    ]
+  },
+  "qoder": {
+    "_comment": "Qoder CN（openapi.qoder.com.cn）：每日领取 additive credits。token 形如 dt-…；machineId 是设备身份，每个账号不同。",
+    "accounts": [
+      {
+        "name": "Qoder-主号",
+        "uid": "REPLACE_WITH_QODER_UID",
+        "accountId": "REPLACE_WITH_QODER_ACCOUNT_ID",
+        "token": "REPLACE_WITH_QODER_DEVICE_TOKEN",
+        "tokenExpiresAt": "2026-01-01T00:00:00.000Z",
+        "base": "https://openapi.qoder.com.cn",
+        "machineId": "REPLACE_WITH_QODER_MACHINE_ID",
+        "fingerprint": {
+          "machineId": "REPLACE_WITH_QODER_MACHINE_ID",
+          "machineOS": "win32",
+          "machineType": "windows_x64",
+          "cosyVersion": "0.4.1"
+        },
+        "fpSource": "magpie"
+      }
+    ]
+  }
+}

@@ -1,0 +1,21 @@
+# 依赖
+node_modules/
+
+# 含明文凭据，绝不提交
+config.json
+config.json.bak*
+.env
+.env.*
+!.env.example
+
+# 运行期状态
+state.json
+state.json.bak*
+*.log
+logs/
+
+# 编辑器/系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

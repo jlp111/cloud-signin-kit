@@ -1,0 +1,57 @@
+{
+  "name": "cloud-signin-kit",
+  "version": "1.0.0",
+  "description": "多平台云端自动签到（WorkBuddy / Trae CN / 码道 CodeArts / Qoder CN）：零依赖 Node 服务 + 自适应看板 + 凭据同步脚本",
+  "keywords": [
+    "checkin",
+    "daily-checkin",
+    "workbuddy",
+    "codebuddy",
+    "trae",
+    "codearts",
+    "qoder",
+    "automation",
+    "zero-dependency"
+  ],
+  "homepage": "https://github.com/jlp111/cloud-signin-kit#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jlp111/cloud-signin-kit.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jlp111/cloud-signin-kit/issues"
+  },
+  "author": "jlp111",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "TICK_MINUTES=5 node src/server.js",
+    "selftest": "node scripts/selftest.cjs",
+    "check": "node --check src/server.js && node --check scripts/sync-from-magpie.cjs && node --check scripts/selftest.cjs",
+    "check:links": "node scripts/check-links.cjs",
+    "auth:list": "node scripts/magpie-auth.mjs --list",
+    "auth:login": "node scripts/magpie-auth.mjs --login all",
+    "auth:push": "node scripts/magpie-auth.mjs --push"
+  },
+  "dependencies": {},
+  "optionalDependencies": {
+    "@tencent-ai/workbuddy-cloud-sdk": "*"
+  },
+  "files": [
+    "src/",
+    "public/",
+    "scripts/",
+    "docs/",
+    "db/",
+    "config.example.json",
+    ".env.example",
+    "README.md",
+    "ACKNOWLEDGEMENTS.md",
+    "LICENSE"
+  ]
+}

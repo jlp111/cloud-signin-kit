@@ -1,0 +1,65 @@
+name: Bug 报告
+description: 某个平台签不上、看板显示不对、启动失败等
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **先看这里**：请先把日志里的 token / Cookie / machineId 替换成 `<redacted>` 再贴。
+        请不要贴完整的 `config.json`。
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 涉及的平台
+      options:
+        - WorkBuddy
+        - Trae CN
+        - 码道 CodeArts
+        - Qoder CN
+        - 看板 / 接口（与具体平台无关）
+        - 启动 / 部署
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: 现象
+      description: 你期望发生什么，实际发生了什么
+      placeholder: 例如：Trae 主号显示「已领 +0」，日志里有 code=9074
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 配置了 2 个 Trae 账号
+        2. 启动后等一轮
+        3. 打开 /panel
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志（已脱敏）
+      description: "`/log?key=…` 返回的片段；错误码比错误文案有用"
+      render: text
+    validations:
+      required: false
+  - type: input
+    id: env
+    attributes:
+      label: 运行环境
+      placeholder: 例如 Linux x64 / Node 20.11 / 部署在 Docker
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 自查
+      options:
+        - label: 已运行 `node scripts/selftest.cjs` 且通过
+        - label: 日志中的敏感值已脱敏
+          required: true
+        - label: 已读 `docs/CONFIG.md` 与 `docs/PLATFORMS.md`

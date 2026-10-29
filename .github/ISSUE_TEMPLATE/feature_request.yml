@@ -1,0 +1,40 @@
+name: 功能建议
+description: 新平台支持、调度改进、看板增强等
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你想解决什么问题
+      description: 先讲场景，再讲方案；"我想要 X" 之前请说说为什么
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 你设想的做法
+      placeholder: 例如：新增 `xxxRound()` 并在 PLATFORMS 注册，节流 120 分钟
+    validations:
+      required: false
+  - type: dropdown
+    id: scope
+    attributes:
+      label: 影响范围
+      options:
+        - 新增平台
+        - 调度 / 节流
+        - 看板 / 展示
+        - 凭据同步
+        - 文档
+        - 其它
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundary
+    attributes:
+      label: 边界确认
+      options:
+        - label: 不引入新的 npm 运行时依赖（或已说明为何必须）
+        - label: 不涉及绕过付费 / 批量注册 / 代签牟利
+          required: true

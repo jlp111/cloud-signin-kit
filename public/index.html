@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>云端签到助手</title>
+<style>
+:root{color-scheme:light}
+*{box-sizing:border-box}
+body{font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  max-width:520px;margin:7vh auto;padding:0 20px;line-height:1.65;color:#4a3f3c;background:#faf6f2}
+h1{font-size:1.25rem;margin:0 0 4px;color:#8a5a68}
+.sub{font-size:.8rem;color:#a08a80;margin-bottom:18px}
+.card{background:#fff;border:1px solid #e8ddd6;border-radius:14px;padding:18px 20px;margin-bottom:14px}
+.st{display:inline-block;padding:3px 13px;border-radius:99px;font-size:.82rem;margin-bottom:12px}
+.ok{background:#3a9c4a22;color:#2e7d3a}
+.warn{background:#d9822b22;color:#b05e12}
+.row{display:flex;justify-content:space-between;padding:7px 0;border-top:1px solid #f2e9e2;font-size:.9rem}
+.row:first-of-type{border-top:0}
+.row span:first-child{color:#8b7a72}
+.row b{font-weight:600;color:#5d4f49}
+/* 余额明细行比"标签栏"小一号，形成层级区分（数字仍由 .row b 保持强调） */
+.row.bal{font-size:.81rem;padding:5px 0}
+.row.bal b{font-size:.86rem}
+.note{font-size:.78rem;color:#a08a80;margin-top:14px;line-height:1.6}
+a.btn{display:block;text-align:center;margin-top:12px;padding:10px 14px;border-radius:10px;
+  background:#8a5a68;color:#fff;text-decoration:none;font-size:.9rem}
+a.ghost{background:#fff;color:#8a5a68;border:1px solid #e0cfd5}
+.err{font-size:.82rem;color:#b05e12;margin-top:10px;line-height:1.6}
+.plat{font-size:.76rem;color:#a08a80;margin-top:8px;padding-top:8px;border-top:1px dashed #f0e4dc}
+</style>
+</head>
+<body>
+<h1>☁️ 云端签到助手</h1>
+<div class="sub" id="sub">WorkBuddy 3 个号 · Trae 2 个号 · 码道 1 个号 · Qoder 1 个号 · 每 20 分钟自动跑一轮</div>
+
+<div class="card">
+  <div id="st" class="st">读取中…</div>
+  <div class="row"><span>今日签到</span><b id="ck">—</b></div>
+  <div class="row"><span>令牌最短剩余</span><b id="tk">—</b></div>
+  <div class="row"><span>Trae 令牌剩余</span><b id="ttk">—</b></div>
+  <div class="row"><span>码道会话可用</span><b id="hw">—</b></div>
+  <div class="row"><span>Qoder 令牌剩余</span><b id="qd">—</b></div>
+  <div id="balbox"></div>
+  <div class="row"><span>云数据库</span><b id="db">—</b></div>
+  <div class="row"><span>最近一轮</span><b id="lt">—</b></div>
+  <div id="plat" class="plat"></div>
+  <div id="err" class="err"></div>
+</div>
+
+<div class="card">
+  <div class="note">
+    完整积分看板（各账号明细、Trae 记录、历史事件）需要访问密钥。<br>
+    桌面上的 <b>云端积分看板.url</b> 双击即可直接打开。
+  </div>
+  <a id="panel" class="btn" href="#" style="display:none">打开完整看板</a>
+  <a id="live" class="btn ghost" href="#">打开线上服务页</a>
+</div>
+
+<script>
+(function () {
+  // 服务地址默认取当前页面的源（本页由服务自己托管）；独立部署时可用 ?origin=https://your-host 覆盖
+  var qs = new URLSearchParams(location.search);
+  var ORIGIN = qs.get('origin') || location.origin;
+  var KEY = qs.get('key') || '';
+  var SHARE = qs.get('sharecode') || '';   // 某些托管平台要求带分享码，按需传
+  function withQuery(p) {
+    var parts = [];
+    if (KEY) parts.push('key=' + encodeURIComponent(KEY));
+    if (SHARE) parts.push('sharecode=' + encodeURIComponent(SHARE));
+    return p + (parts.length ? (p.indexOf('?') >= 0 ? '&' : '?') + parts.join('&') : '');
+  }
+  document.getElementById('live').href = ORIGIN + withQuery('/');
+
+  if (KEY) {
+    var a = document.getElementById('panel');
+    a.href = ORIGIN + withQuery('/panel');
+    a.style.display = 'block';
+  }
+
+  function fail(msg) {
+    var st = document.getElementById('st');
+    st.className = 'st warn';
+    st.textContent = '⚠️ 未取到实时状态';
+    document.getElementById('err').innerHTML = msg;
+  }
+
+  // 先直连目标域名；失败再试同源，都不行就给出可点击的线上页面，
+  // 绝不把英文解析异常抛给用户。
+  var urls = [
+    ORIGIN + withQuery('/health'),
+    withQuery('/health')
+  ];
+
+  function tryOne(i) {
+    if (i >= urls.length) {
+      fail('当前环境无法直接读取云端状态（可能是预览页跨域限制，或服务正在冷启动）。'
+        + '<br>可点下方「打开线上服务页」直接访问，约 30 秒内刷新一次即可。');
+      return;
+    }
+    var ctl = new AbortController();
+    var tm = setTimeout(function () { ctl.abort(); }, 20000);
+    fetch(urls[i], { cache: 'no-store', signal: ctl.signal })
+      .then(function (r) {
+        return r.text().then(function (t) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          var j;
+          try { j = JSON.parse(t); } catch (e) { throw new Error('NON_JSON'); }
+          return j;
+        });
+      })
+      .then(function (j) { clearTimeout(tm); render(j); })
+      .catch(function () { clearTimeout(tm); tryOne(i + 1); });
+  }
+
+  var ALERT_LABELS = {
+    token_expiring: '令牌即将过期',
+    trae_token_expiring: 'Trae 令牌即将过期',
+    codearts_auth: '码道会话需重导',
+    qoder_cred: 'Qoder 凭据需重导',
+    qoder_token_expiring: 'Qoder 令牌将过期',
+    checkin_pending: '今日签到未完成',
+    stale: '服务长时间未跑',
+    business_stale: '业务结果未更新'
+  };
+
+  function render(j) {
+    var st = document.getElementById('st');
+    var bad = (j.alertCount || 0) > 0;
+    st.className = 'st ' + (bad ? 'warn' : 'ok');
+    st.textContent = bad
+      ? '⚠️ ' + (j.alerts || []).map(function (k) { return ALERT_LABELS[k] || k; }).join('、')
+      : '✅ 运行正常';
+    // 今日签到：全平台汇总（WorkBuddy + Trae + 以后新增的平台），由服务端统一算
+    var ci = j.checkin;
+    if (ci && typeof ci.total === 'number') {
+      document.getElementById('ck').textContent = ci.done + '/' + ci.total + ' 已完成'
+        + (ci.pending ? '（缺 ' + ci.pending + '）' : '');
+      document.getElementById('plat').textContent = ci.brief ? '分平台 · ' + ci.brief : '';
+      if (ci.brief) document.getElementById('sub').textContent = '共 ' + ci.total + ' 个账号 · ' + ci.brief + ' · 每 20 分钟自动跑一轮';
+      document.getElementById('ck').style.color = ci.pending ? '#b05e12' : '';
+    } else {
+      // 兼容旧版 /health（无 checkin 字段）
+      var pending = (j.alerts || []).indexOf('checkin_pending') >= 0;
+      document.getElementById('ck').textContent = pending
+        ? '未全部完成（' + (j.acctCount || 0) + ' 个号）'
+        : (j.acctCount || 0) + '/' + (j.acctCount || 0) + ' 已完成';
+    }
+    document.getElementById('tk').textContent = (j.tokenDaysMin != null ? j.tokenDaysMin + ' 天' : '—');
+    var ttk = document.getElementById('ttk');
+    ttk.textContent = (j.traeTokenDaysMin != null ? j.traeTokenDaysMin + ' 天' : '—');
+    if (j.traeTokenDaysMin != null && j.traeTokenDaysMin < 1.5) ttk.style.color = '#b05e12';
+    // 码道会话：只有 delivery 真返回 code=0 才会推进，长期不动＝该重新导出了
+    var hw = document.getElementById('hw');
+    if (j.codeartsSessionOkAt) {
+      var ageH = (Date.now() - new Date(j.codeartsSessionOkAt).getTime()) / 3600000;
+      hw.textContent = new Date(new Date(j.codeartsSessionOkAt).getTime() + 8 * 3600 * 1000)
+        .toISOString().slice(5, 16).replace('T', ' ') + (ageH > 2 ? '（' + Math.round(ageH) + ' 小时前）' : '');
+      hw.style.color = ageH > 2 ? '#b05e12' : '';
+    } else {
+      hw.textContent = '未配置 / 未验证';
+      hw.style.color = '#b05e12';
+    }
+    // Qoder 令牌：约 30 天寿命，<3 天由服务端发 qoder_token_expiring 告警
+    var qd = document.getElementById('qd');
+    if (j.qoderTokenDaysMin != null) {
+      qd.textContent = j.qoderTokenDaysMin + ' 天';
+      qd.style.color = j.qoderTokenDaysMin < 3 ? '#b05e12' : '';
+    } else {
+      qd.textContent = '未配置';
+    }
+    document.getElementById('db').textContent = j.cloudDb === 'ok' ? '已接入 ✓'
+      : (j.cloudDb === 'init-only' ? '已初始化' : '未接入');
+    // 各平台余额：按平台分块、每个账号一行（不再挤成一列）
+    var balbox = document.getElementById('balbox');
+    if (balbox) {
+      var b = j.balances || {}, rows = b.rows || [];
+      var fmt = function (v) {
+        return typeof v === 'number'
+          ? (Number.isInteger(v) ? v.toLocaleString('en-US') : (Math.round(v * 10) / 10).toLocaleString('en-US'))
+          : String(v);
+      };
+      var safe = function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); };
+      if (!rows.length) {
+        balbox.innerHTML = '<div class="row"><span>各平台余额</span><b>暂未取到</b></div>';
+      } else {
+        var html = '<div class="row"><span>各平台余额（Credits）</span><b style="color:#c3b2a9;font-weight:400">剩余</b></div>';
+        rows.forEach(function (x) {
+          var v = (x.r === -1) ? '∞' : fmt(x.r);
+          html += '<div class="row bal"><span>' + safe(x.p) + ' · ' + safe(x.a) + '</span><b>' + v + '</b></div>';
+        });
+        balbox.innerHTML = html;
+      }
+    }
+    document.getElementById('lt').textContent = j.lastTickAt
+      ? new Date(new Date(j.lastTickAt).getTime() + 8 * 3600 * 1000).toISOString().slice(5, 16).replace('T', ' ')
+      : '—';
+  }
+
+  tryOne(0);
+})();
+</script>
+</body>
+</html>
