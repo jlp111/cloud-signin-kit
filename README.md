@@ -280,6 +280,7 @@ CI（`.github/workflows/ci.yml`）在 Node 18/20/22 上跑上面三条。贡献�
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 环境、提交前三件事、代码约定、PR 要求 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本变化与设计决策 |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | 行为准则 |
+| [docs/decisions/OPEN-DECISIONS.md](docs/decisions/OPEN-DECISIONS.md) | 未决事项登记册（已知取舍与待评估项） |
 | [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md) | 致谢 / 参考（三层署名 + 链接核验记录） |
 
 ## 致谢 / 参考
