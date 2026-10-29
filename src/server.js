@@ -5,6 +5,10 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+// 纯函数（日期/Cookie/base 校验/状态判定）集中在 lib.js，可单测；这里只管编排与 IO。
+const {
+  cnDateStr, parseCookieStr, cookieToStr, daysLeft, validBase, statusWorkbuddy, statusTrae,
+} = require('./lib');
 
 const PORT = Number(process.env.PORT || 8080);
 // 2026-10-29 定：签到是"一天一次"的事，20 分钟一轮纯空转（实测猫猫一轮 97 个请求）。
@@ -45,12 +49,45 @@ function loadCfg() {
     });
   }
 }
+// 落盘一律「写临时文件 + rename」：rename 在同一文件系统上是原子的，
+// 于是进程被杀/磁盘满时只会留下半截 .tmp，不会把好的 config/state 截断成非法 JSON。
+function writeFileAtomic(p, data) {
+  const tmp = p + '.tmp';
+  fs.writeFileSync(tmp, data);
+  fs.renameSync(tmp, p);
+}
 function saveCfg() {
-  try { fs.writeFileSync(CFG_PATH, JSON.stringify(CFG, null, 1)); }
+  try { writeFileAtomic(CFG_PATH, JSON.stringify(CFG, null, 1)); }
   catch (e) { log('config保存失败(令牌可能无法持久化): ' + e.message); }
 }
-function loadState() { try { return JSON.parse(fs.readFileSync(STATE_PATH, 'utf8')); } catch { return {}; } }
-function saveState(st) { try { fs.writeFileSync(STATE_PATH, JSON.stringify(st, null, 1)); } catch (e) { log('state保存失败: ' + e.message); } }
+// 只有「文件不存在」才算空状态。解析失败说明文件坏了（多半是被 kill 在写盘中间），
+// 必须留证据：备份成 .corrupt-<ts> 再返回空，否则会静默归零（当天已签标记全丢、重复打接口）。
+function loadState() {
+  let raw;
+  try { raw = fs.readFileSync(STATE_PATH, 'utf8'); }
+  catch (e) {
+    if (e && e.code === 'ENOENT') return {};      // 首次启动，正常
+    log('state 读取失败: ' + (e && e.message || e));
+    return {};
+  }
+  try { return JSON.parse(raw); }
+  catch (e) {
+    const bak = STATE_PATH + '.corrupt-' + Date.now();
+    try { fs.renameSync(STATE_PATH, bak); }
+    catch (e2) { log('state.json 解析失败，且备份失败: ' + ((e2 && e2.message) || e2)); return {}; }
+    log('state.json 解析失败（' + (e && e.message || e) + '），已备份为 ' + bak + ' 并重置为空；本轮会重新确认各平台是否已签');
+    return {};
+  }
+}
+function saveState(st) { try { writeFileAtomic(STATE_PATH, JSON.stringify(st, null, 1)); } catch (e) { log('state保存失败: ' + e.message); } }
+
+// 进程内唯一状态对象：所有 tick / HTTP 端点读写同一份，避免「各自 loadState() 拿快照、
+// 后写者整体覆盖前者」的丢更新（典型：看板粘 Cookie 补签成功后，被正在跑的 tick 回滚）。
+let ST = null;
+function state() {
+  if (!ST) ST = loadState();
+  return ST;
+}
 
 // ---------- 日志 ----------
 const LOG_RING = [];
@@ -92,8 +129,6 @@ async function reqJson(host, urlPath, token, method, body, timeoutMs, extraHeade
     return { status: -1, json: null, raw: String(e && e.message || e) };
   } finally { clearTimeout(t); }
 }
-
-function daysLeft(ms) { return ms ? Math.round((ms - Date.now()) / 8640000) / 10 : null; }
 
 // ---------- 云数据库（BaaS）接入：运行历史落库（可选） ----------
 // 从 config.json 的 cloud 字段（或环境变量）读取，缺失则自动跳过（不影响主流程）。
@@ -229,9 +264,7 @@ async function ensureTokens() {
 }
 
 // ---------- 日期（东八区） ----------
-function cnDateStr() {
-  return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
-}
+// 实现见 src/lib.js 的 cnDateStr(ts)：可注入时间戳，便于单测跨零点边界。
 
 // ---------- 平台注册表（签到汇总的唯一事实来源） ----------
 // 看板的「今日签到」、/health 的 checkin 字段、/digest 的战报，全部由这里汇总，
@@ -246,36 +279,15 @@ const PLATFORMS = [
     key: 'workbuddy',
     label: 'WorkBuddy',
     accounts: () => (CFG && CFG.accounts) || [],
-    status(st, a, today) {
-      const c = (((st.accounts || {})[a.name] || {}).checkin) || {};
-      const done = c.day === today && !!c.done;
-      return {
-        done,
-        credit: done ? Number(c.credit) || 0 : 0,
-        streak: done ? Number(c.streak) || 0 : 0,
-        state: done ? 'ok' : (c.day === today ? 'fail' : 'pending'),
-        note: c.note || '',
-      };
-    },
+    // 判定逻辑在 src/lib.js（纯函数，已单测）：今天领成功＝ok；「活动未开启」保持 pending。
+    status: statusWorkbuddy,
   },
   {
     key: 'trae',
     label: 'Trae',
     accounts: () => (CFG && CFG.trae && CFG.trae.accounts) || [],
-    status(st, a, today) {
-      const r = ((st.trae || {})[a.name]) || {};
-      const done = r.day === today && r.outcome === 'claimed';
-      return {
-        done,
-        credit: done ? (Number(r.credit) || 0) + (Number(r.extra) || 0) : 0,
-        streak: 0,
-        state: done ? 'ok'
-          : r.outcome === 'device_busy' ? 'busy'
-          : r.outcome === 'no_device' ? 'nodev'
-          : 'fail',
-        note: r.note || '',
-      };
-    },
+    // 判定逻辑在 src/lib.js（纯函数，已单测）：今天还没跑过＝pending（不是 fail）。
+    status: statusTrae,
   },
   {
     key: 'codearts',
@@ -369,7 +381,7 @@ async function doCheckin(acct, st) {
   const today = cnDateStr();
   if (c.day === today && c.done) {
     // 今天已领（多为重启后重跑）：同样保证云库当天有一条记录，只补一次
-    if (c.dbDay !== today) { c.dbDay = today; dbEventOnce(acct.name, 'checkin', '今日已领（' + (c.note || '已领') + '）', { credit: c.credit, streak: c.streak }); }
+    if (c.dbDay !== today) { dbEventOnce(acct.name, 'checkin', '今日已领（' + (c.note || '已领') + '）', { credit: c.credit, streak: c.streak }).then(ok => { if (ok) c.dbDay = today; }); }
     return '已领(跳过)';
   }
   const s1 = await reqJson(HOST_CB, '/v2/billing/meter/checkin-activity-status', acct.accessToken, 'POST', {});
@@ -378,12 +390,18 @@ async function doCheckin(acct, st) {
     c.day = today; c.done = false; c.note = '查询失败';
     return '查询失败';
   }
-  if (!d1.active) { c.day = today; c.done = true; c.note = '活动未开启'; return '活动未开启'; }
-  // 每天只往云库补记一次（无论本轮是真领取还是幂等跳过），避免每 20 分钟一轮刷出一堆重复事件
+  if (!d1.active) {
+    // 活动未开启 ≠ 已领：done 置真会让当天彻底不再重试（活动一开就漏签这一天），
+    // 也会误刷 st.lastOkAt、把 business_stale 告警掩盖掉。保持 pending，每一轮继续试。
+    c.day = today; c.done = false; c.inactive = true; c.note = '活动未开启';
+    return '活动未开启';
+  }
+  c.inactive = false;   // 活动在线，走真实领取路径
+  // 每天只往云库补记一次（无论本轮是真领取还是幂等跳过），避免每轮刷出一堆重复事件
   if (d1.today_checked_in === true) {
     c.day = today; c.done = true; c.note = '先前已领';
     c.streak = d1.streak_days; c.credit = d1.today_credit;
-    if (c.dbDay !== today) { c.dbDay = today; dbEventOnce(acct.name, 'checkin', '今日已领（先前已领）', { credit: d1.today_credit, streak: d1.streak_days }); }
+    if (c.dbDay !== today) { dbEventOnce(acct.name, 'checkin', '今日已领（先前已领）', { credit: d1.today_credit, streak: d1.streak_days }).then(ok => { if (ok) c.dbDay = today; }); }
     return '先前已领';
   }
   const s2 = await reqJson(HOST_CB, '/v2/billing/meter/daily-checkin', acct.accessToken, 'POST', {});
@@ -391,14 +409,14 @@ async function doCheckin(acct, st) {
   if (code2 === 10001) {
     c.day = today; c.done = true; c.note = '已领(10001)';
     c.streak = d1.streak_days; c.credit = d1.today_credit;
-    if (c.dbDay !== today) { c.dbDay = today; dbEventOnce(acct.name, 'checkin', '今日已领（10001）', { credit: d1.today_credit, streak: d1.streak_days }); }
+    if (c.dbDay !== today) { dbEventOnce(acct.name, 'checkin', '今日已领（10001）', { credit: d1.today_credit, streak: d1.streak_days }).then(ok => { if (ok) c.dbDay = today; }); }
     return '已领(10001)';
   }
   if (s2.status === 200 && code2 === 0) {
     c.day = today; c.done = true; c.note = '云端领取成功';
     c.streak = d1.streak_days; c.credit = d1.today_credit;
     log(acct.name + ' ✅ 每日积分云端领取成功');
-    if (c.dbDay !== today) { c.dbDay = today; dbEventOnce(acct.name, 'checkin', '每日积分领取成功', { credit: d1.today_credit, streak: d1.streak_days }); }
+    if (c.dbDay !== today) { dbEventOnce(acct.name, 'checkin', '每日积分领取成功', { credit: d1.today_credit, streak: d1.streak_days }).then(ok => { if (ok) c.dbDay = today; }); }
     return '领取成功';
   }
   log(acct.name + ' 签到失败 HTTP=' + s2.status + ' code=' + code2);
@@ -595,9 +613,7 @@ async function traeRound(st) {
     // 今日已领成功则跳过（幂等，避免无意义请求）；跳过前保证当天云库有记录
     if (rec.day === today && rec.outcome === 'claimed') {
       if (rec.dbDay !== today) {
-        rec.dbDay = today;
-        dbEventOnce('Trae:' + a.name, 'trae_checkin', '今日已领（幂等跳过）+' + ((Number(rec.credit) || 0) + (Number(rec.extra) || 0)), { credit: rec.credit, extra: rec.extra });
-        saveState(st);
+        dbEventOnce('Trae:' + a.name, 'trae_checkin', '今日已领（幂等跳过）+' + ((Number(rec.credit) || 0) + (Number(rec.extra) || 0)), { credit: rec.credit, extra: rec.extra }).then(ok => { if (ok) { rec.dbDay = today; saveState(st); } });
       }
       continue;
     }
@@ -613,8 +629,7 @@ async function traeRound(st) {
         log('Trae ' + a.name + ' 今日已领 +' + ((Number(rec.credit)||0)+(Number(rec.extra)||0)));
         // 与 WorkBuddy 一致：当天只补记一次，保证历史里每天都有 Trae 的记录
         if (rec.dbDay !== today) {
-          rec.dbDay = today;
-          dbEventOnce('Trae:' + a.name, 'trae_checkin', '今日已领（幂等跳过）+' + ((Number(rec.credit) || 0) + (Number(rec.extra) || 0)), { credit: rec.credit, extra: rec.extra });
+          dbEventOnce('Trae:' + a.name, 'trae_checkin', '今日已领（幂等跳过）+' + ((Number(rec.credit) || 0) + (Number(rec.extra) || 0)), { credit: rec.credit, extra: rec.extra }).then(ok => { if (ok) rec.dbDay = today; });
         }
         saveState(st);
         continue;
@@ -684,19 +699,7 @@ const HW_HOME = 'https://devcloud.cn-north-4.huaweicloud.com/chat/home';
 const HW_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0.0';
 const HW_COOKIE_KEY = 'devclouddevuibjJ_SESSION_ID';
 
-function parseCookieStr(s) {
-  const m = {};
-  for (const part of String(s || '').split(';')) {
-    const i = part.indexOf('=');
-    if (i <= 0) continue;
-    const k = part.slice(0, i).trim(), v = part.slice(i + 1).trim();
-    if (k) m[k] = v;
-  }
-  return m;
-}
-function cookieToStr(m) {
-  return Object.keys(m).map(k => k + '=' + m[k]).join('; ');
-}
+// parseCookieStr / cookieToStr 见 src/lib.js（纯函数，已单测）
 
 // 把响应里的 Set-Cookie 合并回账号凭据。华为网关每次访问都可能续期会话，
 // 丢掉这条链路，Cookie 就会在 30~60 分钟后静置过期 —— 这是云端能自持的关键。
@@ -800,8 +803,7 @@ async function codeartsRound(st) {
         } catch { /* 探活失败不影响当日结论 */ }
       }
       if (rec.dbDay !== today) {
-        rec.dbDay = today;
-        dbEventOnce('码道:' + a.name, 'codearts_checkin', '今日已签（幂等跳过）+' + (rec.credit || 0), { credit: rec.credit });
+        dbEventOnce('码道:' + a.name, 'codearts_checkin', '今日已签（幂等跳过）+' + (rec.credit || 0), { credit: rec.credit }).then(ok => { if (ok) rec.dbDay = today; });
       }
       saveState(st);
       continue;
@@ -841,8 +843,7 @@ async function codeartsRound(st) {
         rec.outcome = 'claimed'; rec.credit = amount; rec.note = '今日已签（幂等跳过）';
         log('码道 ' + a.name + ' 今日已签 ' + amount + ' ' + unit);
         if (rec.dbDay !== today) {
-          rec.dbDay = today;
-          dbEventOnce('码道:' + a.name, 'codearts_checkin', '今日已签（幂等跳过）+' + amount, { credit: amount, campaignId: cid });
+          dbEventOnce('码道:' + a.name, 'codearts_checkin', '今日已签（幂等跳过）+' + amount, { credit: amount, campaignId: cid }).then(ok => { if (ok) rec.dbDay = today; });
         }
         continue;
       }
@@ -872,9 +873,8 @@ async function codeartsRound(st) {
       }
       rec.credit = amount;
       if (rec.dbDay !== today) {
-        rec.dbDay = today;
         dbEventOnce('码道:' + a.name, 'codearts_checkin',
-          '码道签到成功 +' + amount + ' ' + unit, { credit: amount, campaignId: cid });
+          '码道签到成功 +' + amount + ' ' + unit, { credit: amount, campaignId: cid }).then(ok => { if (ok) rec.dbDay = today; });
       }
     } catch (e) {
       rec.day = today; rec.outcome = 'failed';
@@ -985,8 +985,7 @@ async function qoderRound(st) {
     // 今日已领 → 不再重复请求活动列表（幂等省一次调用），只在云库补当天记录
     if (rec.day === today && rec.outcome === 'claimed') {
       if (rec.dbDay !== today) {
-        rec.dbDay = today;
-        dbEventOnce('Qoder:' + a.name, 'qoder_checkin', '今日已领（幂等跳过）+' + (rec.credit || 0) + ' Credits', { credit: rec.credit });
+        dbEventOnce('Qoder:' + a.name, 'qoder_checkin', '今日已领（幂等跳过）+' + (rec.credit || 0) + ' Credits', { credit: rec.credit }).then(ok => { if (ok) rec.dbDay = today; });
       }
       continue;
     }
@@ -1041,12 +1040,11 @@ async function qoderRound(st) {
         log('Qoder ' + a.name + ' ' + rec.note);
       }
       if (rec.outcome === 'claimed' && rec.dbDay !== today) {
-        rec.dbDay = today;
         // 区分"本轮真领到了"与"只是观测到已领"：云库存的是事实，不能写成我们干的
         dbEventOnce('Qoder:' + a.name, 'qoder_checkin',
           (rec.by === 'server' ? 'Qoder 领取成功 +' : 'Qoder 今日已领（观测到活动已 CLAIMED）+')
             + rec.credit + ' Credits',
-          { credit: rec.credit, balance: rec.balance, by: rec.by || 'server' });
+          { credit: rec.credit, balance: rec.balance, by: rec.by || 'server' }).then(ok => { if (ok) rec.dbDay = today; });
       }
       // 余额顺带查一下（失败不影响主结论）
       try {
