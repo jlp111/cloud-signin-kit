@@ -50,11 +50,20 @@ function loadCfg() {
   }
 }
 // 落盘一律「写临时文件 + rename」：rename 在同一文件系统上是原子的，
-// 于是进程被杀/磁盘满时只会留下半截 .tmp，不会把好的 config/state 截断成非法 JSON。
+// 于是进程被杀/磁盘满时只会留下半截临时文件，不会把好的 config/state 截断成非法 JSON。
+// 临时名带 pid+时间戳而不是固定 '.tmp'：互斥（TICK_RUNNING / ROUND_RUNNING）之外
+// 仍有 fire-and-forget 的写入者（如 dbEventOnce(...).then() 里的 saveState），
+// 固定名会让两个写入者共用一个临时文件，rename 时互相踩空。
 function writeFileAtomic(p, data) {
-  const tmp = p + '.tmp';
-  fs.writeFileSync(tmp, data);
-  fs.renameSync(tmp, p);
+  const tmp = p + '.tmp.' + process.pid + '.' + Date.now();
+  try {
+    fs.writeFileSync(tmp, data);
+    fs.renameSync(tmp, p);
+  } catch (e) {
+    // rename 没成功就别把半截临时文件留在目录里（写失败/rename 失败都要清）
+    try { fs.unlinkSync(tmp); } catch { /* 文件可能根本没建出来 */ }
+    throw e;
+  }
 }
 function saveCfg() {
   try { writeFileAtomic(CFG_PATH, JSON.stringify(CFG, null, 1)); }

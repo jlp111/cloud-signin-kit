@@ -9,13 +9,14 @@
 
 - **Trae 跨零点假告警**：`status()` 缺"今天还没跑过"的分支，昨天 `claimed` 的记录在 00:00 后被判成失败，导致每天零点到当天首轮之间看板与战报必然报一次红叉（现在判为 `pending`，与码道 / Qoder 一致）。
 - **WorkBuddy「活动未开启」不再算已领**：原来直接写 `done=true`，当天彻底不再重试（活动一开就漏签这天），还会刷新 `lastOkAt` 掩盖 `business_stale`。现在写 `done=false, inactive=true`，看板显示"活动未开启（每轮重试）"。
-- **状态文件原子落盘**：`config.json` / `state.json` 一律「写 `.tmp` 再 rename」，进程被杀不会留下半截 JSON。
+- **状态文件原子落盘**：`config.json` / `state.json` 一律「写临时文件再 rename」，进程被杀不会留下半截 JSON。临时文件名带 pid 与时间戳（`<文件>.tmp.<pid>.<ts>`）而非固定 `.tmp`——互斥之外仍有 fire-and-forget 的写入者会调 `saveState`，固定名会让两个写入者共用一个临时文件、rename 时互相踩空；rename 失败会删掉临时文件，不在目录里堆残留。
 - **state 解析失败不再静默归零**：只在文件不存在时当空态；解析失败会记日志并把坏文件备份成 `state.json.corrupt-<ts>`，避免"当天已签标记全丢、所有平台重打一遍接口"却查不到原因。
 - **进程内单一状态对象**：tick 与 HTTP 端点共用同一份 state，消除"各入口各自读快照、后写者整体覆盖前者"的丢更新（典型症状：看板粘 Cookie 补签成功后，被正在跑的 tick 回滚）。
 - **补跑互斥**：`/codearts-cookie`、`/qoder-cred` 触发的补跑撞上正在跑的一轮时不再并发执行，改为如实返回"已保存，正在跑一轮，稍后自动补签"。
 - **云库事件不再因一次失败永久丢失**：`dbEventOnce()` 的返回值此前无人接收、`dbDay` 在请求发出前就被置真；现在只有落库成功才置真。
 - **Qoder `base` 校验统一**：`/qoder-cred` 与 `/sync-from-magpie` 走同一套校验（必须 https、无端口/路径/参数、非内网地址），杜绝把 `base` 当成"让服务端请求任意地址"的入口。
 - **请求体超限返回 413**：原来直接 `req.destroy()`，客户端只看到连接被重置。
+- **监听失败快速失败**：`server.listen` 的错误（如 `EADDRINUSE`）原来被 `uncaughtException` 兜住，进程"活着但根本没在监听"，调用方只能等到超时；现在打印 `HTTP 服务启动失败：<code> <message>` 并 `exit 1`。启动日志的端口改用 `server.address().port`，`PORT=0` 时输出内核分配的真实端口。
 
 ### 变更
 
@@ -25,8 +26,9 @@
 
 ### 内部
 
-- 新增 `src/lib.js`（纯函数：日期 / Cookie 解析 / base 校验 / 状态判定）与 `scripts/unit-tests.cjs`（`node:assert`，零依赖），接入 CI 三个 Node 版本矩阵。
-- `scripts/selftest.cjs` 加固：固定基端口 + 10 次递增重试（不再随机端口偶发撞车）；新增鉴权矩阵、未鉴权 `/health` 不含账号名、带 key 必须有 `rows`、超大 body 回 413 等断言。
+- 新增 `src/lib.js`（纯函数：日期 / Cookie 解析 / base 校验 / 状态判定），`server.js` 改为引用；新增 `scripts/unit-tests.cjs`（`node:assert`，零依赖，49 条），与 `src/lib.js` 语法检查一起接入 CI 三个 Node 版本矩阵。
+- 删死代码：`maybeGrowthTasks`（无调用点，且其内部调用的 `runGrowthTasks` 全文不存在）。
+- `scripts/selftest.cjs` 加固：子进程 `PORT=0` 由内核分配端口、从启动日志解析真实端口（消除 Windows 上 `127.0.0.1` 探测能过但 `0.0.0.0` bind 被拒的竞态），并在监听失败时快速失败（exit 1）；新增鉴权矩阵（`/panel` `/log` `/digest` `/history` `/probe` 未授权必须 401）、未鉴权 `/health` 不含账号名、带 key 必须有 `rows`、超大 body 回 413、目录内无 `.tmp.*` 残留等断言。
 
 ## [1.0.0] - 2026-10-29
 

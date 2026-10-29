@@ -63,7 +63,7 @@ function startServer(tag, cfg, state) {
     }),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  const ph = { child, buf: '', exitCode: null };
+  const ph = { child, buf: '', exitCode: null, statePath };
   child.stdout.on('data', d => { ph.buf += String(d); });
   child.stderr.on('data', d => { ph.buf += String(d); });
   child.on('exit', c => { ph.exitCode = c; if (c !== null && c !== 0) log('进程提前退出，code=' + c + '\n' + tail(ph.buf)); });
@@ -147,6 +147,20 @@ function stopPhase(ph) { try { ph.child.kill('SIGKILL'); } catch { /* 已退出 
   }).then(r => r.status).catch(() => -1);
   if (big < 400 || big >= 500) fail('超大 body 应返回 4xx（如 413），实际 ' + big);
   log('✓ 超大 body 返回 ' + big);
+
+  // 原子写盘的临时文件不许留在目录里：零账号实例的 /tick 全程不打外部接口
+  // （ensureTokens / 各平台轮次 / 余额刷新在 0 个账号时都是空循环），
+  // 只在 tick 的 finally 里 saveState —— 正好用来验证"连续 3 次真实落盘无 .tmp.* 残留"。
+  for (let i = 1; i <= 3; i++) {
+    const code = await fetch('http://127.0.0.1:' + port1 + '/tick?key=' + encodeURIComponent(KEY), { method: 'POST' })
+      .then(r => r.status).catch(() => -1);
+    if (code !== 200) fail('第 ' + i + ' 次 POST /tick 返回 ' + code + '（需要它真的落盘才能验残留）');
+  }
+  const st1 = JSON.parse(fs.readFileSync(p1.statePath, 'utf8'));
+  if ((st1.tickCount || 0) < 3) fail('3 次 /tick 后 state.tickCount 应 >= 3，实际 ' + st1.tickCount + '（落盘没发生，残留断言会空过）');
+  const leftovers = fs.readdirSync(path.dirname(p1.statePath)).filter(n => n.indexOf('.tmp.') >= 0);
+  if (leftovers.length) fail('落盘目录残留临时文件：' + leftovers.join(', '));
+  log('✓ 连续 3 次落盘（tickCount=' + st1.tickCount + '），目录内无 .tmp.* 残留');
 
   stopPhase(p1);
   // 端口不再复用：阶段 2 用内核重新分配的端口，不必等上一个实例的端口"变成可绑定"。
