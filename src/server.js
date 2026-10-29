@@ -526,10 +526,25 @@ async function doBuddyTravel(acct, st) {
 
 // ---------- 一轮完整工作 ----------
 let TICK_RUNNING = false;   // 防重入：上一轮没结束就跳过，避免并发把 state 写乱
+// 由 HTTP 端点触发的「单平台补跑」（粘 Cookie / 换 token 后立刻签一次）。
+// 它和 tick 一样会写 state 与 CFG，所以必须与 tick 互斥——否则两边各自跑一轮，
+// 后结束的那轮会把先结束那轮刚写入的「今天已签」整体覆盖掉（丢更新）。
+let ROUND_RUNNING = false;
+
+// 拿不到锁就返回 false（调用方据此如实告知"稍后自动补签"，而不是假装跑过了）。
+async function runRoundExclusive(fn, label) {
+  if (TICK_RUNNING || ROUND_RUNNING) return false;
+  ROUND_RUNNING = true;
+  try { await fn(); }
+  catch (e) { log(label + '异常: ' + ((e && e.message) || e)); }
+  finally { ROUND_RUNNING = false; }
+  return true;
+}
+
 async function tick() {
-  if (TICK_RUNNING) { log('上一轮尚未结束，跳过本轮'); return; }
+  if (TICK_RUNNING || ROUND_RUNNING) { log('上一轮尚未结束，跳过本轮'); return; }
   TICK_RUNNING = true;
-  const st = loadState();
+  const st = state();
   try {
     st.lastTickAt = new Date().toISOString();
     st.tickCount = (st.tickCount || 0) + 1;
@@ -1203,7 +1218,7 @@ const server = http.createServer((req, res) => {
   if (urlObj.pathname === '/health') {
     // 这个端点**公网无鉴权**，所以只允许放"非敏感、能自证"的信息：
     // 不带任何账号昵称/余额/任务明细，只给数量、告警种类和业务锚点。
-    const st = loadState();
+    const st = state();
     const today = cnDateStr();
     const kinds = new Set();
     for (const a of CFG.accounts) {
@@ -1266,7 +1281,7 @@ const server = http.createServer((req, res) => {
       magpieSyncDays: CFG.magpieSyncAt ? Math.round(((Date.now() - new Date(CFG.magpieSyncAt).getTime()) / 86400000) * 10) / 10 : null,
       // 各平台余额：balances 是合计，balanceRows 是按账号逐行（入口页用它分行展示）
       balances: (function () {
-        const stt = loadState();
+        const stt = st;   // 复用本请求已加载的快照，别为聚合再读一次盘
         const agg = (pf, arr) => {
           let remain = 0, total = 0, n = 0;
           for (const a of arr || []) {
@@ -1349,9 +1364,13 @@ const server = http.createServer((req, res) => {
       saveCfg();
       const note = camp ? ('活动在线，当前状态 ' + (camp.status || '?') + '，本次可领 ' + (camp.benefitAmount != null ? camp.benefitAmount : '?') + ' ' + (camp.benefitUnit === 'CREDIT' || !camp.benefitUnit ? '积分' : camp.benefitUnit)) : '登录态有效，但暂未发现每日签到活动';
       log('码道 ' + a.name + ' 会话 Cookie 已由看板更新并实测通过');
-      // 立刻补签一次（当天还没签的话），让用户提交完就能看到结果
-      try { await codeartsRound(loadState()); } catch (e) { log('码道 提交后补签异常: ' + ((e && e.message) || e)); }
-      return send(200, { ok: true, verified: true, account: a.name, note });
+      // 立刻补签一次（当天还没签的话），让用户提交完就能看到结果。
+      // 与 tick 互斥：撞上正在跑的一轮就不并发跑（否则 state 丢更新），如实告知稍后自动补。
+      const ran = await runRoundExclusive(() => codeartsRound(state()), '码道 提交后补签');
+      return send(200, {
+        ok: true, verified: true, account: a.name, note, ran,
+        msg: ran ? '已保存，已立刻补签一次' : '已保存，正在跑一轮，稍后自动补签',
+      });
     });
     return;
   }
@@ -1367,6 +1386,11 @@ const server = http.createServer((req, res) => {
       const token = String(b.token || '').trim();
       if (token.slice(0, 3) !== 'dt-') {
         return send(400, { ok: false, error: 'token 必须是 dt- 开头（从本机 Qoder 客户端 auth.v1.dat 解出，或跑 sync-qoder-from-local.py）' });
+      }
+      // base 会直接拿去做请求，必须先校验（否则等于给了一个「让服务端去请求任意地址」的入口）
+      const wantBase = b.base ? validBase(b.base) : null;
+      if (b.base && !wantBase) {
+        return send(400, { ok: false, error: 'base 不合法：只接受 https 域名（不带端口/路径/参数），例如 https://openapi.qoder.com.cn' });
       }
       if (!CFG.qoder) CFG.qoder = { accounts: [], note: '' };
       if (!Array.isArray(CFG.qoder.accounts)) CFG.qoder.accounts = [];
@@ -1390,8 +1414,9 @@ const server = http.createServer((req, res) => {
         a.fingerprint.machineId = a.machineId;
         a.fpSource = a.fpSource || 'magpie';
       }
-      // base 可指定（CN＝openapi.qoder.com.cn，国际版＝openapi.qoder.sh）；只收 https 纯主机名
-      if (b.base && /^https:\/\/[a-z0-9.-]+$/i.test(String(b.base))) a.base = String(b.base);
+      // base 可指定（CN＝openapi.qoder.com.cn，国际版＝openapi.qoder.sh）。
+      // 校验统一走 lib.validBase：https、无 path/query/userinfo/端口、非内网地址。
+      if (wantBase) a.base = wantBase;
       // 当场实测：campaigns 200 且有返回才算数；失败保留旧凭据
       const c = await qdApi(a, QD_CAMPAIGNS);
       if (!(c.status === 200 && c.json && Array.isArray(c.json.campaigns))) {
@@ -1410,9 +1435,11 @@ const server = http.createServer((req, res) => {
       }
       saveCfg();
       log('Qoder ' + a.name + ' 凭据已由看板更新并实测通过（campaigns=' + c.json.campaigns.length + '）');
-      try { await qoderRound(loadState()); } catch (e) { log('Qoder 提交后补领异常: ' + ((e && e.message) || e)); }
+      // 同 /codearts-cookie：与 tick 互斥，撞上就不并发跑，避免 state 丢更新
+      const ran = await runRoundExclusive(() => qoderRound(state()), 'Qoder 提交后补领');
       return send(200, {
-        ok: true, verified: true, account: a.name,
+        ok: true, verified: true, account: a.name, ran,
+        msg: ran ? '已保存，已立刻补领一次' : '已保存，正在跑一轮，稍后自动补领',
         note: '凭据有效，campaigns=' + c.json.campaigns.length + (hasBenefit ? '，含每日领取活动' : '（暂无 CLAIM_BENEFIT 活动）'),
       });
     });
@@ -1487,12 +1514,15 @@ const server = http.createServer((req, res) => {
         const name = String(q.name || '').trim();
         const token = String(q.token || '').trim();
         if (!name || token.slice(0, 3) !== 'dt-') { out.qoder.push({ name, ok: false, why: '缺 name / 非 dt- token' }); continue; }
+        // 同步来的 base 同样要校验：不合法就整条拒掉，绝不拿它去发请求（盲 SSRF 放大器）
+        const qBase = q.base ? validBase(q.base) : QD_DEFAULT_BASE;
+        if (!qBase) { out.qoder.push({ name, ok: false, why: 'base 不合法' }); continue; }
         CFG.qoder = CFG.qoder || { accounts: [] };
         CFG.qoder.accounts = CFG.qoder.accounts || [];
         let a = (q.uid && CFG.qoder.accounts.find(x => x.uid === q.uid)) || CFG.qoder.accounts.find(x => x.name === name);
         if (!a) { a = { name, uid: q.uid || '' }; CFG.qoder.accounts.push(a); }
         // 用待验证的凭据临时构造一份再测，坏的不落盘
-        const probeAcc = { token, base: q.base || QD_DEFAULT_BASE, machineId: q.machineId || a.machineId,
+        const probeAcc = { token, base: qBase, machineId: q.machineId || a.machineId,
           fingerprint: Object.assign({}, a.fingerprint, q.machineId ? { machineId: q.machineId } : {}) };
         let v = { status: -1, json: null };
         try { v = await qdApi(probeAcc, QD_CAMPAIGNS); } catch (e) { v = { status: -1, json: null, err: String(e.message || e) }; }
@@ -1504,7 +1534,7 @@ const server = http.createServer((req, res) => {
         a.token = token;
         if (q.machineId) { a.machineId = String(q.machineId); a.fingerprint = Object.assign({}, a.fingerprint, { machineId: a.machineId }); }
         if (q.expiresAt) a.tokenExpiresAt = q.expiresAt;
-        if (q.base) a.base = String(q.base);
+        a.base = qBase;
         a.syncedFrom = 'magpie';
         changed = true;
         const daily = (v.json.campaigns || []).filter(x => x && x.actionType === 'CLAIM_BENEFIT');
@@ -1533,7 +1563,7 @@ const server = http.createServer((req, res) => {
   }
   if (urlObj.pathname === '/' && req.method === 'GET') {
     // [deploy] 公开落地页：仅 /health 级别信息（无账号名/令牌/余额），让分享链接和应用卡片可打开
-    const st = loadState();
+    const st = state();
     const bj = ms => ms ? new Date(ms + 8*3600*1000).toISOString().slice(0,16).replace('T',' ') + ' 北京时间' : '—';
     const lastTick = st.lastTickAt ? bj(new Date(st.lastTickAt).getTime()) : '—';
     const lastOk = st.lastOkAt ? bj(new Date(st.lastOkAt).getTime()) : '—';
@@ -1608,7 +1638,7 @@ const server = http.createServer((req, res) => {
   if (urlObj.pathname === '/panel' && req.method === 'GET') {
     // [deploy] 积分领取看板：authed() 已校验 access_key；只读 state/config，无敏感令牌出街
     (async () => {
-    const st = loadState();
+    const st = state();
     const today = cnDateStr();
     const sum = checkinSummary(st);   // 全平台汇总（WorkBuddy + Trae + …）
     const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -1930,7 +1960,7 @@ const server = http.createServer((req, res) => {
 
   // 一行战报：给云端心跳当"推送内容"用。纯文本，手机上一眼看完。
   if (urlObj.pathname === '/digest') {
-    const st = loadState();
+    const st = state();
     const today = cnDateStr();
     const sum = checkinSummary(st);            // 全平台：WorkBuddy + Trae + …
     const miss = sum.rows.filter(r => !r.done);
@@ -1977,7 +2007,7 @@ const server = http.createServer((req, res) => {
     return res.end(`${head}${today} ${hhmm}｜${bits.join(' · ')} · ${tail}`);
   }
   if (urlObj.pathname === '/status') {
-    return send(200, { ok: true, now: new Date().toISOString(), state: loadState() });
+    return send(200, { ok: true, now: new Date().toISOString(), state: state() });
   }
   if (urlObj.pathname === '/log') {
     return send(200, { ok: true, log: LOG_RING.slice(-100) });
@@ -2009,7 +2039,7 @@ const server = http.createServer((req, res) => {
     return send(200, { ok: true, config: CFG });
   }
   if (urlObj.pathname === '/tick' && req.method === 'POST') {
-    tick().then(() => send(200, { ok: true, msg: '已执行一轮', state: loadState() })).catch(e => send(500, { ok: false, err: String(e) }));
+    tick().then(() => send(200, { ok: true, msg: '已执行一轮', state: state() })).catch(e => send(500, { ok: false, err: String(e) }));
     return;
   }
   if (urlObj.pathname === '/refresh' && req.method === 'POST') {
@@ -2039,7 +2069,7 @@ process.on('unhandledRejection', e => { try { log('未处理拒绝（已兜住�
 loadCfg();
 initCloudDb();
 server.listen(PORT, '0.0.0.0', () => {
-  const sm0 = checkinSummary(loadState());
+  const sm0 = checkinSummary(state());
   log('wbmon-cloud 已启动，端口 ' + PORT + '，账号 ' + sm0.total + ' 个（' + platformBrief(sm0) + '）');
   log('云数据库（BaaS）：' + (CLOUD_DB ? '已接入，运行历史将落库' : '未接入（' + (CLOUD_ERR || '未知原因') + '），仅本地日志'));
   dbSelfTest().then(ok => { CLOUD_OK = ok; }).catch(() => {});
