@@ -2045,7 +2045,10 @@ server.listen(PORT, '0.0.0.0', () => {
   log('wbmon-cloud 已启动，端口 ' + PORT + '，账号 ' + sm0.total + ' 个（' + platformBrief(sm0) + '）');
   log('云数据库（BaaS）：' + (CLOUD_DB ? '已接入，运行历史将落库' : '未接入（' + (CLOUD_ERR || '未知原因') + '），仅本地日志'));
   dbSelfTest().then(ok => { CLOUD_OK = ok; }).catch(() => {});
-  tick().catch(e => log('首次tick异常: ' + e.message));
+  // 演示/截图模式：NO_START_TICK=1 时不在启动时立刻跑一轮，
+  // 便于用预置的 state.json 渲染看板（不会去打任何平台接口）
+  if (!process.env.NO_START_TICK) tick().catch(e => log('首次tick异常: ' + e.message));
+  else log('NO_START_TICK=1：跳过首轮（仅渲染看板/接口）');
   schedule();
 });
 

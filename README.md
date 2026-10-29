@@ -20,6 +20,7 @@
 
 ## 目录
 
+- [长什么样](#长什么样)
 - [架构](#架构)
 - [特性](#特性)
 - [项目结构](#项目结构)
@@ -34,6 +35,26 @@
 - [文档索引](#文档索引)
 - [致谢 / 参考](#致谢--参考)
 - [License](#license)
+
+## 长什么样
+
+<table>
+  <tr>
+    <td width="69%" valign="top">
+      <img src="docs/images/dashboard-desktop.png" alt="桌面看板：今日签到 6/6、今日积分、猫猫总数、令牌最短剩余，以及 WorkBuddy / Trae / 码道 / Qoder 四张明细表">
+    </td>
+    <td width="31%" valign="top">
+      <img src="docs/images/dashboard-mobile.png" alt="手机看板：≤640px 时表格变成每账号一张卡片，标签在左、数值在右">
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><sub>桌面：一屏看完签到、余额、猫猫、令牌剩余</sub></td>
+    <td align="center"><sub>手机（≤640px）：每个账号一张卡片</sub></td>
+  </tr>
+</table>
+
+> 截图为**演示数据**（虚构账号 `演示-主号` / `Trae-主号` 等，余额也是假的），不含任何真实账号与凭据。
+> 想自己生成同款：`NO_START_TICK=1` 启动后用预置 `state.json` 渲染即可（见 [docs/CONFIG.md](docs/CONFIG.md#环境变量总览)）。
 
 ## 架构
 

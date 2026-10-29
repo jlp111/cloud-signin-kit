@@ -16,6 +16,7 @@
 - **可选云端事件库**：`db/schema.sql`，按账号 × 日期幂等去重。
 - **自检与文档体检**：`scripts/selftest.cjs`（零凭据起实例打端点）、`scripts/check-links.cjs`（相对链接检查），并接入 GitHub Actions。
 - **文档**：`README.md`、`docs/CONFIG.md`、`docs/PLATFORMS.md`、`docs/DEPLOY.md`、`ACKNOWLEDGEMENTS.md`、`SECURITY.md`、`CONTRIBUTING.md`。
+- **界面截图**：`docs/images/` 下的桌面 / 手机看板图（演示数据渲染，用 `NO_START_TICK=1` 生成，不含真实账号）。
 
 ### 设计决策（值得记录）
 
