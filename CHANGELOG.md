@@ -16,6 +16,7 @@
 - **云库事件不再因一次失败永久丢失**：`dbEventOnce()` 的返回值此前无人接收、`dbDay` 在请求发出前就被置真；现在只有落库成功才置真。
 - **Qoder `base` 校验统一**：`/qoder-cred` 与 `/sync-from-magpie` 走同一套校验（必须 https、无端口/路径/参数、非内网地址），杜绝把 `base` 当成"让服务端请求任意地址"的入口。
 - **请求体超限返回 413**：原来直接 `req.destroy()`，客户端只看到连接被重置。
+- **`/tick`、`/refresh` 的鉴权由自检钉死**：这两个 POST 端点本身没有 `authed()`，由 `/probe` 之前的统一鉴权闸门拦截（未带 key 返回 401 `未授权`），但自检的未授权矩阵此前只覆盖 GET 端点——闸门被挪位、或在它之前多插一个分支，两个写端点就会裸奔而 CI 不会报警。现在矩阵补上 `POST /tick`、`POST /refresh` 未授权必须 401，并在闸门处注释写明它覆盖到哪些端点。
 - **监听失败快速失败**：`server.listen` 的错误（如 `EADDRINUSE`）原来被 `uncaughtException` 兜住，进程"活着但根本没在监听"，调用方只能等到超时；现在打印 `HTTP 服务启动失败：<code> <message>` 并 `exit 1`。启动日志的端口改用 `server.address().port`，`PORT=0` 时输出内核分配的真实端口。
 
 ### 变更
@@ -28,7 +29,8 @@
 
 - 新增 `src/lib.js`（纯函数：日期 / Cookie 解析 / base 校验 / 状态判定），`server.js` 改为引用；新增 `scripts/unit-tests.cjs`（`node:assert`，零依赖，49 条），与 `src/lib.js` 语法检查一起接入 CI 三个 Node 版本矩阵。
 - 删死代码：`maybeGrowthTasks`（无调用点，且其内部调用的 `runGrowthTasks` 全文不存在）。
-- `scripts/selftest.cjs` 加固：子进程 `PORT=0` 由内核分配端口、从启动日志解析真实端口（消除 Windows 上 `127.0.0.1` 探测能过但 `0.0.0.0` bind 被拒的竞态），并在监听失败时快速失败（exit 1）；新增鉴权矩阵（`/panel` `/log` `/digest` `/history` `/probe` 未授权必须 401）、未鉴权 `/health` 不含账号名、带 key 必须有 `rows`、超大 body 回 413、目录内无 `.tmp.*` 残留等断言。
+- `scripts/selftest.cjs` 加固：子进程 `PORT=0` 由内核分配端口、从启动日志解析真实端口（消除 Windows 上 `127.0.0.1` 探测能过但 `0.0.0.0` bind 被拒的竞态），并在监听失败时快速失败（exit 1）；新增鉴权矩阵（GET `/panel` `/log` `/digest` `/history` `/probe` 与 POST `/tick` `/refresh` 未授权必须 401）、未鉴权 `/health` 不含账号名、带 key 必须有 `rows`、超大 body 回 413、目录内无 `.tmp.*` 残留等断言。
+- `scripts/selftest.cjs` 的 `/health` 轮询抗抖动（并发负载下实测偶发假失败）：超时 20 秒 → 30 秒；每次请求单独加 5 秒超时——原来 `fetch` 无超时，一次连上却不回包就能把轮询整个卡死，次数上限根本轮不到；连接类错误（`ECONNREFUSED` / `ECONNRESET` / `ETIMEDOUT` / 超时 / `fetch failed`）继续重试并 400ms → 1s 退避，非连接类错误（状态码异常、响应体非 JSON）立即失败；失败输出带端口与最后一次错误的 `message` / `cause.code`。
 
 ## [1.0.0] - 2026-10-29
 

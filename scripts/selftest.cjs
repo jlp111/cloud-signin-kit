@@ -73,8 +73,9 @@ function startServer(tag, cfg, state) {
 
 function tail(s) { return String(s || '').slice(-800); }
 
-async function get(port, p) {
-  const r = await fetch('http://127.0.0.1:' + port + p);
+async function get(port, p, timeoutMs) {
+  const init = timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : undefined;
+  const r = await fetch('http://127.0.0.1:' + port + p, init);
   const t = await r.text();
   return { status: r.status, text: t };
 }
@@ -89,16 +90,50 @@ async function waitPort(ph, tag) {
     await sleep(50);
   }
 }
+// 轮询 /health。并发负载下（CI runner 上同时有别的活在跑）内核 accept 可能晚几秒，
+// 所以：连接类错误继续重试并退避，非连接类错误（状态码异常、响应体不是 JSON）立即失败。
+// 每次请求单独加 5 秒超时 —— 原来 fetch 没有超时，一次连上却不回包就能把整个轮询卡死，
+// "20 秒无响应"的次数上限根本轮不到，这是之前排查只能靠猜的直接原因之一。
+const HEALTH_TIMEOUT_MS = 30000;
+const HEALTH_REQ_TIMEOUT_MS = 5000;
+const CONN_CODES = ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'EHOSTUNREACH', 'EAI_AGAIN', 'ABORT_ERR'];
+function isConnErr(e) {
+  const c = (e && e.cause) || {};
+  const code = (e && e.code) || c.code || (c.errors && c.errors[0] && c.errors[0].code) || '';
+  if (CONN_CODES.indexOf(code) >= 0) return true;
+  if (e && (e.name === 'TimeoutError' || e.name === 'AbortError')) return true;
+  return /fetch failed|socket hang up|other side closed|ECONNREFUSED|ECONNRESET|ETIMEDOUT/i.test(String((e && e.message) || ''));
+}
+function describeErr(e) {
+  if (!e) return '（无）';
+  const c = (e && e.cause) || {};
+  const code = (e && e.code) || c.code || (c.errors && c.errors[0] && c.errors[0].code) || '';
+  const msg = (e && e.message) || String(e);
+  const cmsg = c.message && c.message !== msg ? ' / ' + c.message : '';
+  return msg + cmsg + (code ? ' [code=' + code + ']' : '');
+}
 async function waitHealth(port, ph) {
-  for (let i = 0; i < 30; i++) {
-    await sleep(500);
+  const deadline = Date.now() + HEALTH_TIMEOUT_MS;
+  let delay = 400;
+  let lastErr = null;
+  let tries = 0;
+  for (;;) {
+    if (Date.now() > deadline) {
+      fail('端口 ' + port + ' 的 /health 在 ' + (HEALTH_TIMEOUT_MS / 1000) + ' 秒内没起来（尝试 ' + tries + ' 次）'
+        + '；最后一次错误：' + describeErr(lastErr) + '；服务端输出：\n' + tail(ph.buf));
+    }
+    tries++;
     try {
-      const r = await get(port, '/health');
-      if (r.status === 200) return JSON.parse(r.text);
-    } catch { /* 还没起来 */ }
+      const r = await get(port, '/health', HEALTH_REQ_TIMEOUT_MS);
+      if (r.status !== 200) fail('端口 ' + port + ' 的 /health 返回 ' + r.status + '（不是连接问题，直接判失败）：' + String(r.text).slice(0, 200));
+      return JSON.parse(r.text);
+    } catch (e) {
+      if (!isConnErr(e)) fail('端口 ' + port + ' 的 /health 响应异常（非连接类，直接判失败）：' + describeErr(e) + '；响应：' + String((e && e.text) || '').slice(0, 200));
+      lastErr = e;
+    }
+    await sleep(delay);
+    delay = Math.min(Math.round(delay * 1.5), 1000);
   }
-  fail('20 秒内 /health 无响应；日志：\n' + tail(ph.buf));
-  return null;
 }
 function stopPhase(ph) { try { ph.child.kill('SIGKILL'); } catch { /* 已退出 */ } }
 
@@ -123,6 +158,16 @@ function stopPhase(ph) { try { ph.child.kill('SIGKILL'); } catch { /* 已退出 
     if (r.status !== 401) fail(ep + ' 未授权应 401，实际 ' + r.status);
   }
   log('✓ 数据端点未授权一律 401（/panel /log /digest /history /probe）');
+
+  // 写端点也必须 401：/tick、/refresh 没有各自的 authed()，靠 /probe 之前的全局闸门统一拦。
+  // 闸门被挪到后面、或者在它之前多插一个分支，这两个端点就会裸奔（任何人可触发整轮、
+  // 反复占用 TICK_RUNNING 挤掉正常轮次）—— 用断言把它钉死。
+  for (const ep of ['/tick', '/refresh']) {
+    const code = await fetch('http://127.0.0.1:' + port1 + ep, { method: 'POST' })
+      .then(r => r.status).catch(() => -1);
+    if (code !== 401) fail('POST ' + ep + ' 未授权应 401，实际 ' + code);
+  }
+  log('✓ 写端点未授权一律 401（POST /tick /refresh）');
 
   const panel = await get(port1, '/panel?key=' + encodeURIComponent(KEY));
   if (panel.status !== 200) fail('/panel 状态 ' + panel.status);

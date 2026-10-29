@@ -1602,6 +1602,11 @@ const server = http.createServer((req, res) => {
     return res.end(html);
   }
 
+  // 统一鉴权闸门：本行之后的所有端点（/probe /panel /digest /status /log /history /tokens
+  // /config /tick /refresh）都必须带 access_key，包括 POST /tick、POST /refresh 这两个写端点
+  // —— 文档承诺 /tick 需 key；无鉴权时任何人都能触发整轮（一轮约 97 个请求），还能反复占用
+  // TICK_RUNNING 把正常轮次挤掉。此闸门之前的分支（/health 的公开摘要、静态页）以及
+  // 各自做鉴权的三个凭据写入端点（/codearts-cookie /qoder-cred /sync-from-magpie）不经过这里。
   if (!authed(req, urlObj)) return send(401, { ok: false, msg: '未授权' });
   if (urlObj.pathname === '/probe' && req.method === 'GET') {
     // [deploy] 出网探测：验证云沙箱能否访问第三方平台域名（决定能否云端代签）
