@@ -8,13 +8,8 @@
 **签到跑在云上，不在你的电脑上。** 关掉电脑、不用带手机、出差两周，到点它照样把四个平台的签到做完。
 
 > **English TL;DR** — A zero-dependency Node.js worker that keeps running **in the cloud**, claiming daily
-> credits from WorkBuddy / Trae CN / Huawei Cloud CodeArts / Qoder CN on schedule — **even when your laptop is off**.
-> Ships a mobile-friendly dashboard, health endpoint and CI self-tests.
-> ```
-> git clone https://github.com/jlp111/cloud-signin-kit.git && cd cloud-signin-kit
-> cp config.example.json config.json   # set ACCESS_KEY
-> node src/server.js
-> ```
+> credits from WorkBuddy / Trae CN / Huawei Cloud CodeArts / Qoder CN — **even when your laptop is off**.
+> Ships a mobile-friendly dashboard, health endpoint and CI self-tests. Setup takes three commands — see below.
 
 ## 核心区别：不依赖你开电脑
 
