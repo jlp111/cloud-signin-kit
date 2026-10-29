@@ -19,9 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
---------------------------------------------------------------------------------
-
-本项目参考/复用了若干第三方开源项目（均为独立作品，版权归各自作者）。
-它们各自的许可与来源见 ACKNOWLEDGEMENTS.md；其中采用 MIT 的项目，
-其版权声明与许可文本由其自身仓库/包提供，本文件不再重复收录。
