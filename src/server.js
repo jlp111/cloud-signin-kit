@@ -570,7 +570,6 @@ async function tick() {
       }
     }
     if (buddyDue) st.buddyAt = new Date().toISOString();
-    // [deploy] 跳过成长任务
     try { await traeRound(st); } catch (e) { log('Trae 轮异常: ' + (e && e.message || e)); }
     try { await codeartsRound(st); } catch (e) { log('码道 轮异常: ' + (e && e.message || e)); }
     try { await qoderRound(st); } catch (e) { log('Qoder 轮异常: ' + (e && e.message || e)); }
@@ -806,7 +805,7 @@ async function codeartsRound(st) {
       continue;
     }
     // 今天已领成功 → 不再每轮打接口。华为会话探活也只在超过 CODEARTS_PROBE_MINUTES
-    // 才做一次：实测会话 1~2 小时就死、接口轮询续不住，每 20 分钟探一次只是徒增请求。
+    // 才做一次：实测会话 1~2 小时就死、接口轮询续不住，每轮都探只是徒增请求。
     if (rec.day === today && rec.outcome === 'claimed') {
       const lastProbe = rec.probeAt ? new Date(rec.probeAt).getTime() : 0;
       if (Date.now() - lastProbe >= CODEARTS_PROBE_MINUTES * 60000) {
@@ -899,7 +898,7 @@ async function codeartsRound(st) {
       saveState(st);
     }
   }
-  // 会话续期只在真有变化时落盘，避免每 20 分钟重写 config
+  // 会话续期只在真有变化时落盘，避免每轮重写 config
   if (cfgDirty) { try { saveCfg(); } catch {} }
 }
 
@@ -1156,32 +1155,6 @@ async function refreshBalances(st) {
   saveState(st);
 }
 
-// ---------- 成长任务自动化（每轮顺带补缺口） ----------
-// 策略：每轮都做一次「轻量检查」（全量任务一次请求）；无缺口则几乎零成本。
-// 有缺口时跑配方，但**同一任务当天最多尝试 3 次**（防卡死任务空转）。
-// 好处：官方"不定期上线"的新任务最多 20 分钟就被抓到，不必等到次日。
-// [deploy] 成长任务模块未随此发布（伪造埋点，不接）
-async function maybeGrowthTasks(st) {
-  const today = cnDateStr();
-  st.growthRuns = st.growthRuns || {};
-  for (const acct of CFG.accounts) {
-    const rec = st.growthRuns[acct.name] || (st.growthRuns[acct.name] = {});
-    if (rec.day !== today) { rec.day = today; rec.tries = {}; rec.count = 0; }
-    rec.tries = rec.tries || {};
-    try {
-      const r = await runGrowthTasks(acct.accessToken, (m) => log(acct.name + ' ' + m),
-        (kind, detail, extra) => dbEvent(acct.name, kind, detail, extra),
-        { tries: rec.tries, maxTries: 3 });
-      if (r.didWork) {
-        rec.count = (rec.count || 0) + 1;
-        log(acct.name + ' 📋 成长任务（当日第 ' + rec.count + ' 次补缺口）：' + r.results.join(' | '));
-      }
-    } catch (e) {
-      log(acct.name + ' 成长任务异常：' + (e && e.message || e));
-    }
-  }
-}
-
 // ---------- 定时器 ----------
 const START_AT = Date.now();
 function schedule() {
@@ -1215,9 +1188,31 @@ const server = http.createServer((req, res) => {
     return res.end();
   }
   const send = (code, obj) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(obj, null, 1)); };
+  // 读请求体 + 解析 JSON。超限时回 413，而不是 req.destroy()（后者客户端只看到连接被重置，
+  // 面板上会显示成网络错误，用户根本不知道是体太大）。
+  const readJson = (req, limit, cb) => {
+    let raw = '', tooBig = false;
+    req.on('data', c => {
+      if (tooBig) return;
+      raw += c;
+      if (raw.length > limit) {
+        tooBig = true;
+        send(413, { ok: false, error: '请求体过大（上限 ' + limit + ' 字节）' });
+        req.destroy();
+      }
+    });
+    req.on('end', () => {
+      if (tooBig) return;
+      let b = {}; try { b = JSON.parse(raw || '{}'); } catch { b = {}; }
+      cb(b);
+    });
+  };
   if (urlObj.pathname === '/health') {
-    // 这个端点**公网无鉴权**，所以只允许放"非敏感、能自证"的信息：
-    // 不带任何账号昵称/余额/任务明细，只给数量、告警种类和业务锚点。
+    // 这个端点**公网无鉴权**（应用卡片预览要跨域读它），所以内容按鉴权分两级：
+    //   · 未带 access_key：只给数量（done/total）、告警种类、业务锚点时间、按平台的余额合计；
+    //   · 带 access_key：额外给 balances.rows 逐账号明细（入口页用它分行展示）。
+    // 账号昵称属个人信息，绝不能出现在未鉴权响应里。
+    const isAuthed = authed(req, urlObj);
     const st = state();
     const today = cnDateStr();
     const kinds = new Set();
@@ -1279,7 +1274,7 @@ const server = http.createServer((req, res) => {
       refreshOwner: CFG.refreshOwner || 'magpie',
       // magpie 上次同步距今几天（超过 FALLBACK_AFTER_DAYS 且 access 快到期时，云端会保底自刷）
       magpieSyncDays: CFG.magpieSyncAt ? Math.round(((Date.now() - new Date(CFG.magpieSyncAt).getTime()) / 86400000) * 10) / 10 : null,
-      // 各平台余额：balances 是合计，balanceRows 是按账号逐行（入口页用它分行展示）
+      // 各平台余额：合计恒有；rows（逐账号，含昵称）只在 isAuthed 时给出
       balances: (function () {
         const stt = st;   // 复用本请求已加载的快照，别为聚合再读一次盘
         const agg = (pf, arr) => {
@@ -1297,17 +1292,18 @@ const server = http.createServer((req, res) => {
           const v = qrec[a.name];
           if (v && typeof v.balance === 'number') { qRemain += v.balance; qn++; }
         }
+        // 逐账号明细含昵称，只给已鉴权调用方；未鉴权时 rows 为空数组（前端退化成合计行）
         const rows = [];
-        for (const a of (CFG.accounts || [])) {
+        if (isAuthed) for (const a of (CFG.accounts || [])) {
           const b = ((stt.bal || {}).workbuddy || {})[a.name];
           if (b && typeof b.remain === 'number') rows.push({ p: 'WorkBuddy', a: a.name, r: b.remain });
         }
-        for (const a of ((CFG.trae && CFG.trae.accounts) || [])) {
+        if (isAuthed) for (const a of ((CFG.trae && CFG.trae.accounts) || [])) {
           const b = ((stt.bal || {}).trae || {})[a.name];
           if (b && typeof b.remain === 'number') rows.push({ p: 'Trae CN', a: a.name, r: b.remain });
           else if (b && b.remain === '∞') rows.push({ p: 'Trae CN', a: a.name, r: -1 });
         }
-        for (const a of ((CFG.qoder && CFG.qoder.accounts) || [])) {
+        if (isAuthed) for (const a of ((CFG.qoder && CFG.qoder.accounts) || [])) {
           const v = qrec[a.name];
           if (v && typeof v.balance === 'number') rows.push({ p: 'Qoder', a: a.name, r: v.balance });
         }
@@ -1316,6 +1312,7 @@ const server = http.createServer((req, res) => {
           trae: agg('trae', (CFG.trae && CFG.trae.accounts) || []),
           qoder: qn ? { remain: qRemain, accounts: qn } : null,
           rows,
+          rowsAuthed: isAuthed,
           at: (stt.bal || {}).at || null,
         };
       })(),
@@ -1330,10 +1327,7 @@ const server = http.createServer((req, res) => {
   // 给个网页入口：粘完当场实测，能用才落盘，不让人靠猜。
   if (urlObj.pathname === '/codearts-cookie' && req.method === 'POST') {
     if (!authed(req, urlObj)) return send(401, { ok: false, error: '需要 access_key' });
-    let raw = '';
-    req.on('data', c => { raw += c; if (raw.length > 20000) req.destroy(); });
-    req.on('end', async () => {
-      let b = {}; try { b = JSON.parse(raw || '{}'); } catch { b = {}; }
+    readJson(req, 20000, async b => {
       const cookie = String(b.cookie || '').trim();
       const wantName = String(b.account || '').trim();
       if (!cookie) return send(400, { ok: false, error: 'cookie 不能为空' });
@@ -1379,10 +1373,7 @@ const server = http.createServer((req, res) => {
   // 指纹（Cosy-Machine*）失效表现为 campaigns 空，token 失效表现为 401 —— 都在这重导。
   if (urlObj.pathname === '/qoder-cred' && req.method === 'POST') {
     if (!authed(req, urlObj)) return send(401, { ok: false, error: '需要 access_key' });
-    let raw = '';
-    req.on('data', c => { raw += c; if (raw.length > 40000) req.destroy(); });
-    req.on('end', async () => {
-      let b = {}; try { b = JSON.parse(raw || '{}'); } catch { b = {}; }
+    readJson(req, 40000, async b => {
       const token = String(b.token || '').trim();
       if (token.slice(0, 3) !== 'dt-') {
         return send(400, { ok: false, error: 'token 必须是 dt- 开头（从本机 Qoder 客户端 auth.v1.dat 解出，或跑 sync-qoder-from-local.py）' });
@@ -1452,10 +1443,7 @@ const server = http.createServer((req, res) => {
   // 只有通过的才落盘，没通过的原样保留旧凭据——避免"推了个坏 token 把好号搞挂"。
   if (urlObj.pathname === '/sync-from-magpie' && req.method === 'POST') {
     if (!authed(req, urlObj)) return send(401, { ok: false, error: '需要 access_key' });
-    let raw = '';
-    req.on('data', c => { raw += c; if (raw.length > 300000) req.destroy(); });
-    req.on('end', async () => {
-      let b = {}; try { b = JSON.parse(raw || '{}'); } catch { b = {}; }
+    readJson(req, 300000, async b => {
       const out = { workbuddy: [], trae: [], qoder: [] };
       let changed = false;
 
@@ -1598,7 +1586,7 @@ const server = http.createServer((req, res) => {
       '<dl><dt>已完成轮次</dt><dd>' + (st.tickCount||0) + '</dd>' +
       '<dt>最近一轮</dt><dd>' + lastTick + '</dd>' +
       '<dt>最近成功</dt><dd>' + lastOk + '</dd>' +
-      '<dt>运行间隔</dt><dd>每 20 分钟一轮</dd></dl>' +
+      '<dt>运行间隔</dt><dd>每 ' + TICK_MINUTES + ' 分钟一轮</dd></dl>' +
       '<p style=font-size:.85rem;color:#888>告警：' + (alerts.length?'<ul style=margin:6px 0>' + alertHtml + '</ul>':'<ul style=margin:6px 0>' + alertHtml + '</ul>') + '</p>' +
       '</div></body></html>';
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -1658,19 +1646,17 @@ const server = http.createServer((req, res) => {
       const tokenD = daysLeft(a.expiresAt);
       const ck = isToday
         ? '<span class=ok>✓ 已领</span>'
-        : (c.day === today ? '<span class=warn>✗ ' + esc(c.note || '未领') + '</span>' : '<span class=warn>✗ 今日未领</span>');
+        : (c.day === today && c.inactive ? '<span class=warn>⏳ 活动未开启（每轮重试）</span>'
+          : c.day === today ? '<span class=warn>✗ ' + esc(c.note || '未领') + '</span>' : '<span class=warn>✗ 今日未领</span>');
       const cat = b.owned
         ? esc(b.owned) + ' 只' + (b.limitReached ? ' · 跑满' : ' · 在跑')
         : (b.note ? '<span class=warn>' + esc(b.note) + '</span>' : '未领养');
-      const gd = ((st.growthRuns || {})[a.name] || {});
-      const growth = gd.day === today ? '今日补缺口 ' + (gd.count || 0) + ' 次' : '今日未跑';
       return '<tr><td data-l="账号">' + esc(a.name) + '</td>' +
         '<td data-l="今日签到">' + ck + '</td>' +
         '<td data-l="积分">' + (isToday ? '+' + (c.credit || 0) : '—') + '</td>' +
         '<td data-l="余额">' + fmtBal(balOf('workbuddy', a.name)) + '</td>' +
         '<td data-l="连续">' + (isToday && c.streak ? c.streak + ' 天' : '—') + '</td>' +
         '<td data-l="猫猫">' + cat + '</td>' +
-        '<td data-l="成长任务">' + growth + '</td>' +
         '<td data-l="令牌">' + (tokenD != null ? tokenD + ' 天' : '—') + '</td></tr>';
     }).join('');
     const dl = CFG.accounts.map(x => daysLeft(x.expiresAt)).filter(x => x != null);
@@ -1826,7 +1812,7 @@ const server = http.createServer((req, res) => {
         if (qn) parts.push('Qoder ' + numFmt(q));
         return esc(parts.join(' · ') || '暂未取到');
       })() + '</div>' +
-      '<table><tr><th>账号</th><th>今日签到</th><th>积分</th><th>余额</th><th>连续</th><th>猫猫</th><th>成长任务</th><th>令牌</th></tr>' + rows + '</table>' +
+      '<table><tr><th>账号</th><th>今日签到</th><th>积分</th><th>余额</th><th>连续</th><th>猫猫</th><th>令牌</th></tr>' + rows + '</table>' +
       (function () {
         try {
         const tl2 = (CFG.trae && CFG.trae.accounts) || [];

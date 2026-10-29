@@ -137,7 +137,7 @@ a.ghost{background:#fff;color:#8a5a68;border:1px solid #e0cfd5}
       document.getElementById('ck').textContent = ci.done + '/' + ci.total + ' 已完成'
         + (ci.pending ? '（缺 ' + ci.pending + '）' : '');
       document.getElementById('plat').textContent = ci.brief ? '分平台 · ' + ci.brief : '';
-      if (ci.brief) document.getElementById('sub').textContent = '共 ' + ci.total + ' 个账号 · ' + ci.brief + ' · 每 20 分钟自动跑一轮';
+      if (ci.brief) document.getElementById('sub').textContent = '共 ' + ci.total + ' 个账号 · ' + ci.brief + ' · 每 ' + (j.tickMinutes || 60) + ' 分钟自动跑一轮';
       document.getElementById('ck').style.color = ci.pending ? '#b05e12' : '';
     } else {
       // 兼容旧版 /health（无 checkin 字段）
@@ -171,7 +171,8 @@ a.ghost{background:#fff;color:#8a5a68;border:1px solid #e0cfd5}
     }
     document.getElementById('db').textContent = j.cloudDb === 'ok' ? '已接入 ✓'
       : (j.cloudDb === 'init-only' ? '已初始化' : '未接入');
-    // 各平台余额：按平台分块、每个账号一行（不再挤成一列）
+    // 各平台余额。逐账号明细（含昵称）只有带 key 访问 /health 时才下发；
+    // 未鉴权时 rows 为空，这里退化成"平台 · 合计（N 个账号）"，不留白也不报错。
     var balbox = document.getElementById('balbox');
     if (balbox) {
       var b = j.balances || {}, rows = b.rows || [];
@@ -181,16 +182,26 @@ a.ghost{background:#fff;color:#8a5a68;border:1px solid #e0cfd5}
           : String(v);
       };
       var safe = function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); };
-      if (!rows.length) {
-        balbox.innerHTML = '<div class="row"><span>各平台余额</span><b>暂未取到</b></div>';
-      } else {
-        var html = '<div class="row"><span>各平台余额（Credits）</span><b style="color:#c3b2a9;font-weight:400">剩余</b></div>';
+      var PLAT = [['workbuddy', 'WorkBuddy'], ['trae', 'Trae CN'], ['qoder', 'Qoder']];
+      function aggRow(key, label) {
+        var o = b[key];
+        if (!o || o.accounts == null) return '';
+        return '<div class="row bal"><span>' + safe(label) + ' 共 ' + fmt(o.remain)
+          + '（' + o.accounts + ' 个账号）</span></div>';
+      }
+      var html = '';
+      if (rows.length) {
+        html = '<div class="row"><span>各平台余额（Credits）</span><b style="color:#c3b2a9;font-weight:400">剩余</b></div>';
         rows.forEach(function (x) {
           var v = (x.r === -1) ? '∞' : fmt(x.r);
           html += '<div class="row bal"><span>' + safe(x.p) + ' · ' + safe(x.a) + '</span><b>' + v + '</b></div>';
         });
-        balbox.innerHTML = html;
+      } else {
+        PLAT.forEach(function (p) { html += aggRow(p[0], p[1]); });
+        html = '<div class="row"><span>各平台余额（Credits）</span><b style="color:#c3b2a9;font-weight:400">剩余</b></div>' + html;
+        if (html.indexOf('row bal') < 0) html += '<div class="row"><span>余额</span><b>暂未取到</b></div>';
       }
+      balbox.innerHTML = html;
     }
     document.getElementById('lt').textContent = j.lastTickAt
       ? new Date(new Date(j.lastTickAt).getTime() + 8 * 3600 * 1000).toISOString().slice(5, 16).replace('T', ' ')

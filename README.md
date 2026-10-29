@@ -34,7 +34,7 @@
 
 | 平台 | 每日动作 | 凭据形态 | 能否自愈 |
 |---|---|---|---|
-| **WorkBuddy**（workbuddy.cn / codebuddy） | 签到 + 猫猫旅行收礼物 + 成长任务补缺口 | OAuth access + refresh（约 30 / 60 天） | ✅ 有 refresh |
+| **WorkBuddy**（workbuddy.cn / codebuddy） | 每日签到 + 猫猫旅行（派出 / 收礼物） | OAuth access + refresh（约 30 / 60 天） | ✅ 有 refresh |
 | **Trae CN**（api.trae.cn） | 签到领 credits（基础 100 + 额外 100） | `Cloud-IDE-JWT` + 设备 id（约 5 天） | ⚠️ 依赖上游刷新 |
 | **码道 CodeArts**（华为云 devcloud） | 到访会话触发签到 | 浏览器会话 Cookie（1~2 小时） | ❌ 需人工粘贴 |
 | **Qoder CN**（openapi.qoder.com.cn） | 领取 Add-on credits（+100/天） | `dt-` 设备 token + 每号独立 `machineId` | ⚠️ 依赖上游刷新 |

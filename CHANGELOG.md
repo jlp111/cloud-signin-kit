@@ -3,13 +3,38 @@
 本项目从自用脚本整理而来，此文件记录对外发布的变化。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布]
+
+### 修复
+
+- **Trae 跨零点假告警**：`status()` 缺"今天还没跑过"的分支，昨天 `claimed` 的记录在 00:00 后被判成失败，导致每天零点到当天首轮之间看板与战报必然报一次红叉（现在判为 `pending`，与码道 / Qoder 一致）。
+- **WorkBuddy「活动未开启」不再算已领**：原来直接写 `done=true`，当天彻底不再重试（活动一开就漏签这天），还会刷新 `lastOkAt` 掩盖 `business_stale`。现在写 `done=false, inactive=true`，看板显示"活动未开启（每轮重试）"。
+- **状态文件原子落盘**：`config.json` / `state.json` 一律「写 `.tmp` 再 rename」，进程被杀不会留下半截 JSON。
+- **state 解析失败不再静默归零**：只在文件不存在时当空态；解析失败会记日志并把坏文件备份成 `state.json.corrupt-<ts>`，避免"当天已签标记全丢、所有平台重打一遍接口"却查不到原因。
+- **进程内单一状态对象**：tick 与 HTTP 端点共用同一份 state，消除"各入口各自读快照、后写者整体覆盖前者"的丢更新（典型症状：看板粘 Cookie 补签成功后，被正在跑的 tick 回滚）。
+- **补跑互斥**：`/codearts-cookie`、`/qoder-cred` 触发的补跑撞上正在跑的一轮时不再并发执行，改为如实返回"已保存，正在跑一轮，稍后自动补签"。
+- **云库事件不再因一次失败永久丢失**：`dbEventOnce()` 的返回值此前无人接收、`dbDay` 在请求发出前就被置真；现在只有落库成功才置真。
+- **Qoder `base` 校验统一**：`/qoder-cred` 与 `/sync-from-magpie` 走同一套校验（必须 https、无端口/路径/参数、非内网地址），杜绝把 `base` 当成"让服务端请求任意地址"的入口。
+- **请求体超限返回 413**：原来直接 `req.destroy()`，客户端只看到连接被重置。
+
+### 变更
+
+- **`/health` 按鉴权分级**：未带 `access_key` 只返回数量、告警类别与按平台的余额合计；逐账号明细（`balances.rows`，含昵称）仅在带 key 时下发。入口页在无 `rows` 时退化为"平台 共 N（M 个账号）"合计行。
+- **看板删掉「成长任务」列**：该能力未随此版本发布，该列恒显示"今日未跑"，属假信号。
+- **运行间隔不再写死**：公开页的"每 20 分钟一轮"改为回显实际的 `TICK_MINUTES`。
+
+### 内部
+
+- 新增 `src/lib.js`（纯函数：日期 / Cookie 解析 / base 校验 / 状态判定）与 `scripts/unit-tests.cjs`（`node:assert`，零依赖），接入 CI 三个 Node 版本矩阵。
+- `scripts/selftest.cjs` 加固：固定基端口 + 10 次递增重试（不再随机端口偶发撞车）；新增鉴权矩阵、未鉴权 `/health` 不含账号名、带 key 必须有 `rows`、超大 body 回 413 等断言。
+
 ## [1.0.0] - 2026-10-29
 
 首个公开版本。
 
 ### 新增
 
-- **四平台云端签到**：WorkBuddy（签到 + 猫猫旅行 + 成长任务）、Trae CN、码道 CodeArts、Qoder CN，支持多账号。
+- **四平台云端签到**：WorkBuddy（签到 + 猫猫旅行）、Trae CN、码道 CodeArts、Qoder CN，支持多账号。
 - **看板 `/panel`**：今日签到、余额、令牌剩余、本月累计、最近事件；≤640px 自动切换为「每个账号一张卡片」，不横向滚动。
 - **健康检查 `/health`**：签到汇总、令牌剩余天数、余额合计、告警种类、`refreshOwner`、`magpieSyncDays`。
 - **凭据同步**：`scripts/magpie-auth.mjs`（复用上游插件的登录实现：浏览器授权 → 落配置 → 推送）、`scripts/sync-from-magpie.cjs`（批量只读同步）。

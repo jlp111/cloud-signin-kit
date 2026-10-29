@@ -26,11 +26,16 @@ jobs:
 
       - name: 语法检查
         run: |
+          node --check src/lib.js
           node --check src/server.js
           node --check scripts/sync-from-magpie.cjs
           node --check scripts/selftest.cjs
+          node --check scripts/unit-tests.cjs
 
-      - name: 启动 + 端点自检（零账号）
+      - name: 单元测试（纯函数，无需凭据/网络）
+        run: node scripts/unit-tests.cjs
+
+      - name: 启动 + 端点自检（无真实凭据、零外部请求）
         run: node scripts/selftest.cjs
 
   markdown:
