@@ -7,6 +7,15 @@
 
 **签到跑在云上，不在你的电脑上。** 关掉电脑、不用带手机、出差两周，到点它照样把四个平台的签到做完。
 
+> **English TL;DR** — A zero-dependency Node.js worker that keeps running **in the cloud**, claiming daily
+> credits from WorkBuddy / Trae CN / Huawei Cloud CodeArts / Qoder CN on schedule — **even when your laptop is off**.
+> Ships a mobile-friendly dashboard, health endpoint and CI self-tests.
+> ```
+> git clone https://github.com/jlp111/cloud-signin-kit.git && cd cloud-signin-kit
+> cp config.example.json config.json   # set ACCESS_KEY
+> node src/server.js
+> ```
+
 ## 核心区别：不依赖你开电脑
 
 绝大多数签到脚本的隐含前提是"你的机器得醒着"——cron 要开机、油猴要浏览器开着、快捷指令要手机在线。本项目把这一步搬走了：它是一个**常驻云端**的进程，自己按小时调度，本机只在你需要"换票"时才出场。
@@ -55,6 +64,8 @@
 - [配置方式](#配置方式)
 - [凭据从哪来](#凭据从哪来)
 - [部署](#部署)
+- [升级与停止](#升级与停止)
+- [常见问题](#常见问题)
 - [HTTP 接口](#http-接口)
 - [如何新增一个平台](#如何新增一个平台)
 - [开发与自检](#开发与自检)
@@ -127,7 +138,7 @@ flowchart LR
 ```
 cloud-signin-kit/
 ├── src/
-│   └── server.js              # 主服务：调度 + 四平台实现 + 看板 + HTTP 接口（~2100 行，零外部依赖）
+│   └── server.js              # 主服务：调度 + 四平台实现 + 看板 + HTTP 接口（单文件，零运行时依赖）
 ├── public/
 │   └── index.html             # 落地页（读 /health 显示概览）；带 ?key= 显示「打开完整看板」
 ├── scripts/
@@ -161,7 +172,7 @@ cp config.example.json config.json     # 填 access_key；账号可以先留空
 node src/server.js                     # 或 npm start，默认 8080
 
 curl http://127.0.0.1:8080/health
-open "http://127.0.0.1:8080/panel?key=<你的 ACCESS_KEY>"
+# 然后在浏览器打开：http://127.0.0.1:8080/panel?key=<你的 ACCESS_KEY>
 ```
 
 第一次启动会立刻跑一轮，之后按 `TICK_MINUTES` 循环。想先空跑验证部署：把各平台 `accounts` 留成空数组即可。
@@ -210,6 +221,35 @@ open "http://127.0.0.1:8080/panel?key=<你的 ACCESS_KEY>"
 
 完整步骤、Docker / systemd / 计划任务示例见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。
 
+## 升级与停止
+
+```bash
+# 升级：代码可以覆盖，凭据与状态不能丢
+git pull --ff-only
+systemctl restart cloud-signin        # 或 docker restart <容器>；本地跑就重新 node src/server.js
+
+# 停止
+systemctl stop cloud-signin           # 前台运行直接 Ctrl+C
+```
+
+- 重启**安全**：`state.json` 记着"今天签过没"，重启后当天不会重复打接口；
+- **不要**用 `git clean -fd` 或覆盖式解压把 `config.json` / `state.json` 清掉——丢了就得重新导凭据；
+- 想备份：把 `config.json` + `state.json` 一起拷走（含明文令牌，按密钥对待）。
+
+## 常见问题
+
+| 看到什么 | 什么意思 | 怎么办 |
+|---|---|---|
+| 看板 `⏳ 今日尚未运行` | 当天还没跑到这个平台（未到开窗时间 / 首轮未到） | 不用管，到点自动签 |
+| WorkBuddy `活动未开启` | 平台当期没开签到活动 | 不用管，每轮自动重试；不会误记成"已领" |
+| Trae `9074` | 该账号当前无可信设备（没在客户端登录过） | 在 Trae 客户端登录一次再重新导凭据 |
+| Trae `9095` | 该设备今日名额已被别的账号占用 | 换设备 id 或次日自动重试，属平台限制 |
+| 某号显示 `🔑 待重导` | 凭据已失效 | `node scripts/magpie-auth.mjs --login <平台>` 或手填新 token |
+| 码道每天都红 | 会话 Cookie 只活 1~2 小时且不换发票据 | 在看板码道区块重贴一次 Cookie（平台机制，无解） |
+| `/panel` 打开是 401 | `?key=` 与 `access_key` 不一致 | 核对环境变量 `ACCESS_KEY` |
+| 目录里出现 `state.json.corrupt-*` | 状态文件被写坏/截断，服务已自动备份并重置 | 看当天日志确认原因（磁盘满、被强杀）；旧状态需重新累积 |
+| `/health` 报 `stale` | 进程没在跑，或出网被拦 | 先看进程，再 `GET /probe?key=` 验证各域名可达 |
+
 ## HTTP 接口
 
 除公开的 `/`、`/index.html`、`/health` 外，其余都需要 `?key=<ACCESS_KEY>`（或 `Authorization: Bearer <ACCESS_KEY>`）。
@@ -235,19 +275,24 @@ open "http://127.0.0.1:8080/panel?key=<你的 ACCESS_KEY>"
 
 ## 如何新增一个平台
 
-只改 `src/server.js` 两处：
+**先说清代价**：目标状态是"在 `PLATFORMS` 注册一次就全链路生效"，但目前还没做到——按现状新增平台要改 **4 处必改 + 3 处按需**。这条差异登记在 [`docs/decisions/OPEN-DECISIONS.md`](docs/decisions/OPEN-DECISIONS.md)，收权改造排在下一批。
 
-1. **实现一个 round 函数**（照 `qoderRound` 写）：读 `CFG.<平台>.accounts`，把结果写进
-   `st.<平台>[账号名] = { day, outcome, credit, note }`，成功 / 失败各记一条 `dbEventOnce('平台:账号', '<平台>_checkin', …)`。
-2. **在 `PLATFORMS` 里注册**：
-   ```js
-   { key: 'foo', label: 'Foo',
-     accounts: () => (CFG.foo && CFG.foo.accounts) || [],
-     status: (st) => { /* 返回 'ok' | 'pending' | 'fail' */ } }
-   ```
-   注册后，看板的「今日签到」分母、`/health` 的 `checkin`、`/digest` 战报、本月累计卡片会**自动**把它算进去。
+**必改（漏了会静默出错）**
 
-挂进 `tick()` 时记得按需节流（参考 `BUDDY_MINUTES`），避免空转。
+| # | 改哪里 | 不改的后果 |
+|---|---|---|
+| 1 | `PLATFORMS` 数组加一个条目（`accounts` + `status`） | 看板 / `/health` 根本不认识这个平台 |
+| 2 | 实现 `fooRound(st)`（照 `qoderRound`）：读 `CFG.foo.accounts`，把结果写进 `st.foo[账号名] = { day, outcome, credit, note }` | 不会真的去签 |
+| 3 | `tick()` 里 `await fooRound(st)` | round 写了也永远不被调用 |
+| 4 | `KIND_PLATFORM` 事件映射加上 `foo_checkin` / `foo_fail` | **月度统计静默漏掉整个平台，不报错**——最危险的一处 |
+
+**按需改（不改只是少显示，不会错）**
+
+- `/health` 与新落地页的"凭据即将过期"告警（现在硬编码了三个平台的字段路径）
+- 余额聚合（`/health` 与看板各有一处，只认 workbuddy / trae / qoder）
+- 想要专属表格列（令牌剩余、会话时间之类），需在看板加一个表格块；不加就走通用表，也能用
+
+挂进 `tick()` 时记得按需节流（参考 `BUDDY_MINUTES`），避免空转。改完至少跑一遍 `node scripts/selftest.cjs` 与 `node scripts/unit-tests.cjs`。
 
 ## 开发与自检
 
@@ -261,6 +306,7 @@ CI（`.github/workflows/ci.yml`）在 Node 18/20/22 上跑上面三条。贡献�
 
 ## 使用注意事项
 
+- **接口会变**：本项目调用的是各平台客户端自己用的**非公开接口**，没有兼容性承诺。哪天突然全红，先看 `/log` 与 `/probe`，别怀疑自己；欢迎提 issue 带上脱敏后的错误码。
 - **频率**：默认 60 分钟一轮，但"今天都签完了"的轮次是 **0 请求**。真正花请求的是 WorkBuddy 猫猫旅行（一轮 ~100 个请求）与余额查询，分别节流到 2 小时 / 6 小时。实测 20 分钟一轮 ≈ 7000 请求/天，纯空转。
 - **时区**：所有"今天"按 UTC+8 判定。
 - **签到时间窗**：部分平台有开窗时间（如 Qoder 需等到 10:00 之后），代码里已有闸门；开窗前看板显示"⏳ 今日尚未运行"属正常。
