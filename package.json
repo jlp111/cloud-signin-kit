@@ -1,7 +1,7 @@
 {
   "name": "cloud-signin-kit",
   "version": "1.0.0",
-  "description": "多平台云端自动签到（WorkBuddy / Trae CN / 码道 CodeArts / Qoder CN）：零依赖 Node 服务 + 自适应看板 + 凭据同步脚本",
+  "description": "关掉电脑也能签：签到进程常驻云端，按天自动完成 WorkBuddy / Trae CN / 码道 CodeArts / Qoder CN 的签到与积分领取。零依赖 Node 服务 + 自适应手机看板 + 凭据同步脚本。",
   "keywords": [
     "checkin",
     "daily-checkin",
