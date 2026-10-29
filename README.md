@@ -111,7 +111,8 @@ cloud-signin-kit/
 ├── docs/
 │   ├── CONFIG.md              # 配置项逐条说明
 │   ├── PLATFORMS.md           # 四平台接口路径、凭据字段、错误码
-│   └── DEPLOY.md              # 部署与运维（环境变量、反代、systemd、Docker、计划任务）
+│   ├── DEPLOY.md              # 部署与运维（环境变量、反代、systemd、Docker、计划任务）
+│   └── images/                # 看板截图（演示数据渲染，供 README 引用）
 ├── db/schema.sql              # 可选：云端事件表
 ├── .github/                   # CI + issue / PR 模板
 ├── config.example.json        # 配置模板（占位符）
