@@ -12,7 +12,7 @@
   },
   "accounts": [
     {
-      "_comment": "WorkBuddy（codebuddy / workbuddy.cn）：签到 + 猫猫旅行 + 成长任务",
+      "_comment": "WorkBuddy（codebuddy / workbuddy.cn）：签到 + 猫猫旅行收礼物",
       "name": "WB-主号",
       "uid": "REPLACE_WITH_WORKBUDDY_UID",
       "accessToken": "REPLACE_WITH_WORKBUDDY_ACCESS_TOKEN",
