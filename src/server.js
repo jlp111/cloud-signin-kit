@@ -2054,9 +2054,20 @@ process.on('unhandledRejection', e => { try { log('未处理拒绝（已兜住�
 
 loadCfg();
 initCloudDb();
+// 监听失败必须快速失败：EADDRINUSE / EACCES 这类错误如果冒到下面的
+// uncaughtException，进程会「活着但根本没在监听」——调用方（selftest、部署健康检查）
+// 只能等到超时，比直接崩掉更难查。所以这里显式接住并 exit 1。
+server.on('error', e => {
+  try { log('HTTP 服务启动失败：' + ((e && e.code) || '') + ' ' + ((e && e.message) || e)); } catch (_) { /* 日志落盘失败也不能掩盖退出 */ }
+  process.exit(1);
+});
 server.listen(PORT, '0.0.0.0', () => {
   const sm0 = checkinSummary(state());
-  log('wbmon-cloud 已启动，端口 ' + PORT + '，账号 ' + sm0.total + ' 个（' + platformBrief(sm0) + '）');
+  // PORT=0 时由内核分配空闲端口，此时真实端口只能从 address() 取；
+  // 打日志用真实端口，PORT 有值时行为不变（两者相等）。
+  const addr = server.address();
+  const realPort = (addr && addr.port) || PORT;
+  log('wbmon-cloud 已启动，端口 ' + realPort + '，账号 ' + sm0.total + ' 个（' + platformBrief(sm0) + '）');
   log('云数据库（BaaS）：' + (CLOUD_DB ? '已接入，运行历史将落库' : '未接入（' + (CLOUD_ERR || '未知原因') + '），仅本地日志'));
   dbSelfTest().then(ok => { CLOUD_OK = ok; }).catch(() => {});
   // 演示/截图模式：NO_START_TICK=1 时不在启动时立刻跑一轮，

@@ -9,15 +9,15 @@
 
 const { spawn } = require('child_process');
 const fs = require('fs');
-const net = require('net');
 const os = require('os');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'csk-selftest-'));
-const BASE_PORT = Number(process.env.SELFTEST_PORT || 18080);
 const KEY = 'selftest-' + Math.random().toString(36).slice(2, 10);
 const SENTINEL = 'SENTINEL-ACCT-' + Math.random().toString(36).slice(2, 8);
+const START_TIMEOUT_MS = 15000;          // 等启动日志（真实端口）的上限
+const STARTED_RE = /已启动，端口\s*(\d+)/;
 
 const children = [];
 function log(s) { process.stdout.write('[selftest] ' + s + '\n'); }
@@ -28,24 +28,10 @@ function cleanup(code) {
 }
 function fail(s) { log('✗ ' + s); cleanup(1); }
 
-// 端口固定不自增随机：随机端口撞上别的进程会变成"偶发失败"，比失败本身更糟。
-// 从 BASE_PORT 起逐个探测，最多试 10 个。
-function portFree(p) {
-  return new Promise(resolve => {
-    const srv = net.createServer();
-    srv.once('error', () => resolve(false));
-    srv.once('listening', () => srv.close(() => resolve(true)));
-    srv.listen(p, '127.0.0.1');
-  });
-}
-async function pickPort() {
-  for (let i = 0; i < 10; i++) {
-    const p = BASE_PORT + i;
-    if (await portFree(p)) return p;
-  }
-  throw new Error(BASE_PORT + '~' + (BASE_PORT + 9) + ' 全部被占用，无法启动自检实例');
-}
-
+// 端口交给内核分配（子进程 PORT=0）：此前"先探测端口是否空闲，再让子进程去 bind"
+// 有两个必踩的坑 —— ① 探测绑 127.0.0.1、实际绑 0.0.0.0，地址不同结论无效；
+// ② 上阶段的连接在 18080 上留下 TIME_WAIT，Windows 下紧接着 bind 同端口直接 EADDRINUSE。
+// 让内核分配，既没有竞态，也不再需要"端口被占就换一个"的自增逻辑。
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 function baseCfg() {
@@ -59,14 +45,14 @@ function baseCfg() {
   return cfg;
 }
 
-function startServer(tag, cfg, state, port) {
+function startServer(tag, cfg, state) {
   const cfgPath = path.join(TMP, tag + '-config.json');
   const statePath = path.join(TMP, tag + '-state.json');
   fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 1));
   if (state) fs.writeFileSync(statePath, JSON.stringify(state, null, 1));
   const child = spawn(process.execPath, [path.join(ROOT, 'src', 'server.js')], {
     env: Object.assign({}, process.env, {
-      PORT: String(port),
+      PORT: '0',                   // 0 = 交给内核挑空闲端口，避免 TIME_WAIT 竞态
       ACCESS_KEY: KEY,
       CONFIG_PATH: cfgPath,
       STATE_PATH: statePath,
@@ -77,20 +63,33 @@ function startServer(tag, cfg, state, port) {
     }),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  const out = [];
-  child.stdout.on('data', d => out.push(String(d)));
-  child.stderr.on('data', d => out.push(String(d)));
-  child.on('exit', c => { if (c !== null && c !== 0) log('进程提前退出，code=' + c + '\n' + out.join('').slice(-800)); });
+  const ph = { child, buf: '', exitCode: null };
+  child.stdout.on('data', d => { ph.buf += String(d); });
+  child.stderr.on('data', d => { ph.buf += String(d); });
+  child.on('exit', c => { ph.exitCode = c; if (c !== null && c !== 0) log('进程提前退出，code=' + c + '\n' + tail(ph.buf)); });
   children.push(child);
-  return { child, out };
+  return ph;
 }
+
+function tail(s) { return String(s || '').slice(-800); }
 
 async function get(port, p) {
   const r = await fetch('http://127.0.0.1:' + port + p);
   const t = await r.text();
   return { status: r.status, text: t };
 }
-async function waitHealth(port, out) {
+// 从子进程输出里等"已启动，端口 N"，拿到真实端口再发请求；超时/提前退出都快速失败。
+async function waitPort(ph, tag) {
+  const deadline = Date.now() + START_TIMEOUT_MS;
+  for (;;) {
+    const m = STARTED_RE.exec(ph.buf);
+    if (m) return Number(m[1]);
+    if (ph.exitCode !== null) fail(tag + ' 实例在开始监听前退出，code=' + ph.exitCode + '；输出：\n' + tail(ph.buf));
+    if (Date.now() > deadline) fail(tag + ' 实例 ' + (START_TIMEOUT_MS / 1000) + ' 秒内没给出启动日志（端口未分配）；输出：\n' + tail(ph.buf));
+    await sleep(50);
+  }
+}
+async function waitHealth(port, ph) {
   for (let i = 0; i < 30; i++) {
     await sleep(500);
     try {
@@ -98,17 +97,17 @@ async function waitHealth(port, out) {
       if (r.status === 200) return JSON.parse(r.text);
     } catch { /* 还没起来 */ }
   }
-  fail('20 秒内 /health 无响应；日志：\n' + out.join('').slice(-800));
+  fail('20 秒内 /health 无响应；日志：\n' + tail(ph.buf));
   return null;
 }
 function stopPhase(ph) { try { ph.child.kill('SIGKILL'); } catch { /* 已退出 */ } }
 
 (async () => {
   // ======================= 阶段 1：零账号 =======================
-  const port1 = await pickPort();
-  const p1 = startServer('phase1', baseCfg(), null, port1);
+  const p1 = startServer('phase1', baseCfg(), null);
+  const port1 = await waitPort(p1, '阶段 1');
   log('阶段 1：零账号实例，端口 ' + port1);
-  const health = await waitHealth(port1, p1.out);
+  const health = await waitHealth(port1, p1);
   if (health.ok !== true) fail('/health.ok 不是 true：' + JSON.stringify(health).slice(0, 200));
   log('✓ /health 200, ok=true, 账号数 ' + health.checkin.total);
   if (health.checkin.total !== 0) fail('零账号实例的 checkin.total 应为 0');
@@ -150,10 +149,9 @@ function stopPhase(ph) { try { ph.child.kill('SIGKILL'); } catch { /* 已退出 
   log('✓ 超大 body 返回 ' + big);
 
   stopPhase(p1);
-  await sleep(300);
+  // 端口不再复用：阶段 2 用内核重新分配的端口，不必等上一个实例的端口"变成可绑定"。
 
   // ======================= 阶段 2：单假账号 =======================
-  const port2 = await pickPort();
   const now = new Date().toISOString();
   const today = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
   const cfg2 = baseCfg();
@@ -163,9 +161,10 @@ function stopPhase(ph) { try { ph.child.kill('SIGKILL'); } catch { /* 已退出 
     accounts: { [SENTINEL]: { checkin: { day: today, done: true, credit: 100, streak: 3 } } },
     bal: { workbuddy: { [SENTINEL]: { remain: 1234.5, total: 2000, unit: 'credits', at: now } }, trae: {}, at: now },
   };
-  const p2 = startServer('phase2', cfg2, state2, port2);
+  const p2 = startServer('phase2', cfg2, state2);
+  const port2 = await waitPort(p2, '阶段 2');
   log('阶段 2：单假账号实例（' + SENTINEL + '），端口 ' + port2);
-  await waitHealth(port2, p2.out);
+  await waitHealth(port2, p2);
 
   // ① 未鉴权 /health 不得泄漏账号名
   const anon = await get(port2, '/health');
