@@ -240,7 +240,7 @@ systemctl stop cloud-signin           # 前台运行直接 Ctrl+C
 | Trae `9074` | 该账号当前无可信设备（没在客户端登录过） | 在 Trae 客户端登录一次再重新导凭据 |
 | Trae `9095` | 该设备今日名额已被别的账号占用 | 换设备 id 或次日自动重试，属平台限制 |
 | 某号显示 `🔑 待重导` | 凭据已失效 | `node scripts/magpie-auth.mjs --login <平台>` 或手填新 token |
-| 码道每天都红 | 会话 Cookie 只活 1~2 小时且不换发票据 | 在看板码道区块重贴一次 Cookie（平台机制，无解） |
+| 码道每天都红 | 会话 Cookie 只活 1~2 小时且不换发票据 | 在看板码道区块重贴一次 Cookie。想验证"每 5 分钟探活能否续命"，跑 `node scripts/codearts-keepalive-lab.cjs --cookie=./hw-cookie.txt`（见 [docs/PLATFORMS.md](docs/PLATFORMS.md)） |
 | `/panel` 打开是 401 | `?key=` 与 `access_key` 不一致 | 核对环境变量 `ACCESS_KEY` |
 | 目录里出现 `state.json.corrupt-*` | 状态文件被写坏/截断，服务已自动备份并重置 | 看当天日志确认原因（磁盘满、被强杀）；旧状态需重新累积 |
 | `/health` 报 `stale` | 进程没在跑，或出网被拦 | 先看进程，再 `GET /probe?key=` 验证各域名可达 |

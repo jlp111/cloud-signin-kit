@@ -34,6 +34,7 @@
     "selftest": "node scripts/selftest.cjs",
     "check": "node --check src/server.js && node --check scripts/sync-from-magpie.cjs && node --check scripts/selftest.cjs",
     "check:links": "node scripts/check-links.cjs",
+    "lab:codearts": "node scripts/codearts-keepalive-lab.cjs",
     "auth:list": "node scripts/magpie-auth.mjs --list",
     "auth:login": "node scripts/magpie-auth.mjs --login all",
     "auth:push": "node scripts/magpie-auth.mjs --push"

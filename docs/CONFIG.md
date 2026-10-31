@@ -103,7 +103,7 @@
 | `TICK_MINUTES` | `60` | 主循环间隔；只影响"没签上时多久重试" |
 | `BUDDY_MINUTES` | `120` | WorkBuddy 猫猫检查间隔（最费接口） |
 | `BALANCE_MINUTES` | `360` | 余额查询间隔 |
-| `CODEARTS_PROBE_MINUTES` | `360` | 码道会话探针间隔 |
+| `CODEARTS_PROBE_MINUTES` | `360` | 码道会话探针间隔。**注意语义**：默认 6 小时只是"健康检查"，不是保活——我们的实测认为接口轮询换不出新票据。社区有"压到 3 分钟能防闲置失效"的说法但未验证，可用 `scripts/codearts-keepalive-lab.cjs` 自己跑对照实验后再决定是否调小 |
 | `FALLBACK_AFTER_DAYS` | `7` | 兜底自刷的"上游多久没同步"阈值 |
 | `CONFIG_PATH` / `STATE_PATH` | 项目根 | 配置文件 / 状态文件路径 |
 | `CLOUD_BASE` | `http://127.0.0.1:$PORT` | 同步脚本的推送目标 |

@@ -99,7 +99,27 @@ function statusTrae(st, a, today) {
   };
 }
 
+// 码道 Cookie 完整性检查（不联网，纯字符串判断）。
+// 硬要求两项：SESSION_ID（会话票据）+ tcftk（华为的 CSRF 令牌，会被带进 `cftk` 请求头，
+// 缺了接口多半返回 HTML/鉴权失败，用户会以为"cookie 是对的但就是不行"）。
+// 其余 WAF / agency 类 cookie 只做提示，不阻断 —— 实测缺它们往往仍可用。
+const HW_REQUIRED = ['devclouddevuibjJ_SESSION_ID', 'devclouddevuibjtcftk'];
+const HW_NICE_TO_HAVE = ['HWWAFSESTIME', 'HWWAFSESID', 'devclouddevuibjagencyID', 'BENSESSCC_TAG'];
+
+function hwCookieCheck(cookieStr) {
+  const m = parseCookieStr(cookieStr || '');
+  const missing = HW_REQUIRED.filter((k) => !m[k]);
+  const missingSoft = HW_NICE_TO_HAVE.filter((k) => !m[k]);
+  return {
+    ok: missing.length === 0,
+    missing,
+    missingSoft,
+    hasSession: !!m[HW_REQUIRED[0]],
+    hasCftk: !!m[HW_REQUIRED[1]],
+  };
+}
+
 module.exports = {
   cnDateStr, parseCookieStr, cookieToStr, daysLeft, validBase,
-  isPrivateHost, statusWorkbuddy, statusTrae,
+  isPrivateHost, statusWorkbuddy, statusTrae, hwCookieCheck,
 };

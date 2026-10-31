@@ -172,6 +172,46 @@ t('昨天领过、今天还没跑 → pending', () => {
 });
 
 // ---------------------------------------------------------------------------
+group('hwCookieCheck —— 码道 Cookie 完整性（硬要求 SESSION_ID + tcftk）');
+
+t('两项都齐 → ok，无缺失', () => {
+  const r = L.hwCookieCheck('devclouddevuibjJ_SESSION_ID=abc; devclouddevuibjtcftk=tk; HWWAFSESID=w1; HWWAFSESTIME=1; devclouddevuibjagencyID=ag; BENSESSCC_TAG=b1');
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(r.missing, []);
+  assert.deepStrictEqual(r.missingSoft, []);
+});
+
+t('缺 tcftk → 不 ok，且指出缺的是 tcftk', () => {
+  const r = L.hwCookieCheck('devclouddevuibjJ_SESSION_ID=abc');
+  assert.strictEqual(r.ok, false);
+  assert.deepStrictEqual(r.missing, ['devclouddevuibjtcftk']);
+  assert.strictEqual(r.hasSession, true);
+  assert.strictEqual(r.hasCftk, false);
+});
+
+t('缺 SESSION_ID → 不 ok', () => {
+  const r = L.hwCookieCheck('devclouddevuibjtcftk=tk');
+  assert.strictEqual(r.ok, false);
+  assert.deepStrictEqual(r.missing, ['devclouddevuibjJ_SESSION_ID']);
+});
+
+t('两个硬要求都缺 → 两条都报出来（便于一次说清）', () => {
+  const r = L.hwCookieCheck('foo=1');
+  assert.deepStrictEqual(r.missing, ['devclouddevuibjJ_SESSION_ID', 'devclouddevuibjtcftk']);
+});
+
+t('WAF/agency 缺失只进 missingSoft，不阻断', () => {
+  const r = L.hwCookieCheck('devclouddevuibjJ_SESSION_ID=abc; devclouddevuibjtcftk=tk');
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(r.missingSoft, ['HWWAFSESTIME', 'HWWAFSESID', 'devclouddevuibjagencyID', 'BENSESSCC_TAG']);
+});
+
+t('空串/null 不抛异常', () => {
+  assert.strictEqual(L.hwCookieCheck('').ok, false);
+  assert.strictEqual(L.hwCookieCheck(null).ok, false);
+});
+
+// ---------------------------------------------------------------------------
 process.stdout.write('\n' + pass + ' passed, ' + fail + ' failed\n');
 if (fail) {
   process.stdout.write('\n失败用例：\n  - ' + failures.join('\n  - ') + '\n');

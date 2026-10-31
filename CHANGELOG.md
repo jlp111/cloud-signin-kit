@@ -21,6 +21,11 @@
 
 ### 文档
 
+- **码道 Cookie 校验前置**：粘贴时要求 `SESSION_ID` + `tcftk` 两项硬要求（缺 `tcftk` 会拿到 SPA 的 HTML，表现为"Cookie 明明对却一直失败"），缺哪个直接报哪个；4 个 WAF/agency 类 Cookie 只提示不阻断。校验逻辑进 `src/lib.js` 的 `hwCookieCheck()`，配 6 条单测。
+- **码道失效提示说清边界**：原来只写"需重新导出 Cookie"，现在明确"需重新登录换新 Cookie；只读探活无法续发票据"，避免误以为是我们 bug。
+- **新增对照实验脚本** `scripts/codearts-keepalive-lab.cjs`：验证"每 5 分钟只读探活能否防止会话闲置失效"。分 A（每 5 分钟探）/B（全程不探）两组，单 Cookie 顺序跑、双 Cookie 并行跑，输出四选一结论。Cookie 只从文件读，结果文件不含 Cookie 原文。
+- **诚信修正**：`CODEARTS_PROBE_MINUTES` 的默认值 360 只是健康检查、不是保活；文档里不再暗示"探得勤能续住"，改为"待实验证伪"。参考实现（wangmingdong/workbuddy-signin）与我们的结论冲突，两边都写进 `docs/PLATFORMS.md` 与 `ACKNOWLEDGEMENTS.md` 第十一节。
+
 - **README 增加英文 TL;DR**：让不看中文的读者 3 秒内知道这是什么、为什么值得用。
 - **README 新增「常见问题」表**：解释 9074 / 9095 / 待重导 / 活动未开启 / corrupt 备份文件 / stale 等界面符号，减少无效 issue。
 - **README 新增「升级与停止」**：明确升级时不得覆盖 `config.json` / `state.json`。

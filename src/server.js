@@ -8,6 +8,7 @@ const path = require('path');
 // 纯函数（日期/Cookie/base 校验/状态判定）集中在 lib.js，可单测；这里只管编排与 IO。
 const {
   cnDateStr, parseCookieStr, cookieToStr, daysLeft, validBase, statusWorkbuddy, statusTrae,
+  hwCookieCheck,
 } = require('./lib');
 
 const PORT = Number(process.env.PORT || 8080);
@@ -836,8 +837,10 @@ async function codeartsRound(st) {
       if (hwMergeSetCookie(a, d.setCookies)) cfgDirty = true;
       rec.day = today; rec.at = new Date().toISOString();
       if (d.status === 401 || d.status === 403 || d.status === 302 || d.status === 301) {
-        rec.outcome = 'needauth'; rec.note = '会话失效 HTTP ' + d.status + '（需重新导出 Cookie）';
-        log('码道 ' + a.name + ' 会话失效 HTTP ' + d.status + '，需人工重新导出 Cookie');
+        rec.outcome = 'needauth';
+        // 说清边界：只读探活只能"防止闲置失效"，换不出新票据；华为侧要换票只能重新登录。
+        rec.note = '会话失效 HTTP ' + d.status + '（需重新登录换新 Cookie；只读探活无法续发票据）';
+        log('码道 ' + a.name + ' 会话失效 HTTP ' + d.status + '，需重新登录换新 Cookie（只读探活无法续发票据）');
         dbEvent('码道:' + a.name, 'codearts_auth', '会话失效 HTTP ' + d.status, {});
         continue;
       }
@@ -1340,8 +1343,16 @@ const server = http.createServer((req, res) => {
       const cookie = String(b.cookie || '').trim();
       const wantName = String(b.account || '').trim();
       if (!cookie) return send(400, { ok: false, error: 'cookie 不能为空' });
-      if (cookie.indexOf(HW_COOKIE_KEY) < 0) {
-        return send(400, { ok: false, error: 'Cookie 里没找到 ' + HW_COOKIE_KEY + '，请复制登录华为云后的完整 Cookie' });
+      // 硬要求 SESSION_ID + tcftk：缺 tcftk 时请求多半拿到 HTML/鉴权失败，
+      // 用户会以为"cookie 明明复制对了却不行"，所以在落盘前就拦下来说清楚。
+      const chk = hwCookieCheck(cookie);
+      if (chk.missing.length) {
+        return send(400, {
+          ok: false,
+          error: 'Cookie 不完整，缺少：' + chk.missing.join('、') +
+            '。请在 F12 → Network → 任一 PromptCenterService 请求里复制完整的 cookie 请求头（不是 document.cookie，HttpOnly 的拿不到）',
+          missing: chk.missing,
+        });
       }
       if (!CFG.codearts) CFG.codearts = { accounts: [], note: '' };
       if (!Array.isArray(CFG.codearts.accounts)) CFG.codearts.accounts = [];
@@ -1372,6 +1383,8 @@ const server = http.createServer((req, res) => {
       const ran = await runRoundExclusive(() => codeartsRound(state()), '码道 提交后补签');
       return send(200, {
         ok: true, verified: true, account: a.name, note, ran,
+        // 缺 WAF/agency 类 cookie 不阻断，但告知：部分接口在缺少时会偶发失败
+        warnings: chk.missingSoft.length ? ['Cookie 缺少（通常不影响签到，遇到偶发失败再补）：' + chk.missingSoft.join('、')] : [],
         msg: ran ? '已保存，已立刻补签一次' : '已保存，正在跑一轮，稍后自动补签',
       });
     });
