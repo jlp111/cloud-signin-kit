@@ -30,6 +30,7 @@ function arg(name, dflt) {
 const MINUTES = Number(arg('minutes', '120'));
 const PROBE_MIN = Number(arg('probe-min', '5'));
 const OUT = arg('out', 'hw-lab-result.json');
+const NO_WAIT = process.argv.includes('--no-wait');
 
 function ts() { return new Date().toISOString().replace('T', ' ').slice(0, 19); }
 function say(m) { console.log('[' + ts() + '] ' + m); }
@@ -153,8 +154,22 @@ async function runArm(label, cookie, probeEveryMin) {
   } else {
     const c = readCookie(cookieOne);
     results.push(await runArm('A-探活' + PROBE_MIN + 'min', c, PROBE_MIN));
-    say('A 组结束，开始 B 组（请用一个**刚登录**的新 Cookie，否则 B 组开局可能就失效）');
-    results.push(await runArm('B-不探活', c, 0));
+
+    // 顺序模式的关键：B 组必须换一个**刚登录**的新 Cookie。
+    // 否则 A 组跑完 N 分钟后，同一个 Cookie 早已过期，B 组开局即失效，实验白跑。
+    if (!NO_WAIT && process.stdin.isTTY) {
+      const readline = require('readline').createInterface({ input: process.stdin, output: process.stdout });
+      await new Promise((res) => {
+        readline.question(
+          '\n>>> A 组结束。请把 ' + path.resolve(cookieOne) + ' 换成**刚登录的新 Cookie**（同一个账号也行，重新登录一次即可），然后按回车继续 B 组：',
+          () => { readline.close(); res(); }
+        );
+      });
+    } else {
+      say('--no-wait：直接重读同一文件跑 B 组（若 Cookie 已过期，B 组会判无效）');
+    }
+    const c2 = readCookie(cookieOne);
+    results.push(await runArm('B-不探活', c2, 0));
   }
 
   const a = results[0], b = results[1];
