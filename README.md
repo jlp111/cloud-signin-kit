@@ -101,7 +101,7 @@ flowchart LR
   C --> S[server.js<br/>调度 + 三平台实现]
   S -->|每 60 分钟一轮<br/>已完成则 0 请求| P1[WorkBuddy]
   S --> P2[Trae CN]
-  S --> P4[Qoder CN]
+  S --> P3[Qoder CN]
   S --> D[(state.json<br/>今日已签 / 余额)]
   S -->|可选| DB[(事件库<br/>wbmon_events)]
   S --> UI[看板 /panel<br/>健康 /health]
