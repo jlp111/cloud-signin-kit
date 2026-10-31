@@ -7,9 +7,8 @@
 
 create table if not exists wbmon_events (
   id          bigserial primary key,
-  account     text        not null,           -- 账号标签，形如 "WB-主号" / "Trae:Trae-主号" / "码道:码道-主号"
+  account     text        not null,           -- 账号标签，形如 "WB-主号" / "Trae:Trae-主号" / "Qoder:主号"
   kind        text        not null,           -- checkin / trae_checkin / trae_fail /
-                                              -- codearts_checkin / codearts_auth / codearts_fail /
                                               -- qoder_checkin / qoder_auth / qoder_fail /
                                               -- travel_depart / travel_claim / buddy_adopt / selftest
   detail      text,                           -- 人类可读的一句结果

@@ -39,7 +39,6 @@ function baseCfg() {
   cfg.access_key = KEY;
   cfg.accounts = [];
   cfg.trae = Object.assign({}, cfg.trae, { accounts: [] });
-  cfg.codearts = Object.assign({}, cfg.codearts, { accounts: [] });
   cfg.qoder = Object.assign({}, cfg.qoder, { accounts: [] });
   cfg.cloud = {};
   return cfg;
@@ -186,9 +185,10 @@ function stopPhase(ph) { try { ph.child.kill('SIGKILL'); } catch { /* 已退出 
   log('✓ /digest 200');
 
   // 超大 body 不应把连接直接打断（应给出 4xx 状态码，而不是 ECONNRESET）
-  const big = await fetch('http://127.0.0.1:' + port1 + '/codearts-cookie?key=' + encodeURIComponent(KEY), {
+  // /qoder-cred 的 body 上限是 40KB，这里给 60KB 触发超限分支。
+  const big = await fetch('http://127.0.0.1:' + port1 + '/qoder-cred?key=' + encodeURIComponent(KEY), {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ cookie: 'x'.repeat(30000) }),
+    body: JSON.stringify({ token: 'x'.repeat(60000) }),
   }).then(r => r.status).catch(() => -1);
   if (big < 400 || big >= 500) fail('超大 body 应返回 4xx（如 413），实际 ' + big);
   log('✓ 超大 body 返回 ' + big);

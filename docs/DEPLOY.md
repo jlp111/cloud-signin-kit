@@ -4,7 +4,7 @@
 
 - Node.js **≥ 18**（用到内置 `fetch`、`AbortSignal.timeout`）
 - 一个能长期运行的进程环境（容器 / VPS / NAS / 云托管）
-- 出网能力：需能访问 `www.workbuddy.cn`、`www.codebuddy.cn`、`copilot.tencent.com`、`api.trae.cn`、`devcloud.cn-north-4.huaweicloud.com`、`openapi.qoder.com.cn`
+- 出网能力：需能访问 `www.workbuddy.cn`、`www.codebuddy.cn`、`copilot.tencent.com`、`api.trae.cn`、`openapi.qoder.com.cn`
   部署后先跑 `curl "…/probe?key=$ACCESS_KEY"` 确认。
 
 ## 1. 目录与文件
@@ -150,7 +150,6 @@ curl -s "https://your-host/history?key=$ACCESS_KEY&limit=20" | jq .
 | 值 | 含义 | 处理 |
 |---|---|---|
 | `token_expiring` / `trae_token_expiring` / `qoder_token_expiring` | 令牌剩 < 3 天 | 重导/同步凭据 |
-| `codearts_auth` | 码道会话失效 | 看板重贴 Cookie |
 | `qoder_cred` | Qoder 凭据失效 | `--login qoder-cn` |
 | `checkin_pending` | 今日仍有账号未签 | 看 `/log` 找原因 |
 | `stale` / `business_stale` | 服务久未运行 / 结果久未更新 | 检查进程与出网 |

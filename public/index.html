@@ -32,14 +32,13 @@ a.ghost{background:#fff;color:#8a5a68;border:1px solid #e0cfd5}
 </head>
 <body>
 <h1>☁️ 云端签到助手</h1>
-<div class="sub" id="sub">WorkBuddy 3 个号 · Trae 2 个号 · 码道 1 个号 · Qoder 1 个号 · 每 20 分钟自动跑一轮</div>
+<div class="sub" id="sub">WorkBuddy 3 个号 · Trae 2 个号 · Qoder 1 个号 · 每 20 分钟自动跑一轮</div>
 
 <div class="card">
   <div id="st" class="st">读取中…</div>
   <div class="row"><span>今日签到</span><b id="ck">—</b></div>
   <div class="row"><span>令牌最短剩余</span><b id="tk">—</b></div>
   <div class="row"><span>Trae 令牌剩余</span><b id="ttk">—</b></div>
-  <div class="row"><span>码道会话可用</span><b id="hw">—</b></div>
   <div class="row"><span>Qoder 令牌剩余</span><b id="qd">—</b></div>
   <div id="balbox"></div>
   <div class="row"><span>云数据库</span><b id="db">—</b></div>
@@ -116,7 +115,6 @@ a.ghost{background:#fff;color:#8a5a68;border:1px solid #e0cfd5}
   var ALERT_LABELS = {
     token_expiring: '令牌即将过期',
     trae_token_expiring: 'Trae 令牌即将过期',
-    codearts_auth: '码道会话需重导',
     qoder_cred: 'Qoder 凭据需重导',
     qoder_token_expiring: 'Qoder 令牌将过期',
     checkin_pending: '今日签到未完成',
@@ -150,17 +148,6 @@ a.ghost{background:#fff;color:#8a5a68;border:1px solid #e0cfd5}
     var ttk = document.getElementById('ttk');
     ttk.textContent = (j.traeTokenDaysMin != null ? j.traeTokenDaysMin + ' 天' : '—');
     if (j.traeTokenDaysMin != null && j.traeTokenDaysMin < 1.5) ttk.style.color = '#b05e12';
-    // 码道会话：只有 delivery 真返回 code=0 才会推进，长期不动＝该重新导出了
-    var hw = document.getElementById('hw');
-    if (j.codeartsSessionOkAt) {
-      var ageH = (Date.now() - new Date(j.codeartsSessionOkAt).getTime()) / 3600000;
-      hw.textContent = new Date(new Date(j.codeartsSessionOkAt).getTime() + 8 * 3600 * 1000)
-        .toISOString().slice(5, 16).replace('T', ' ') + (ageH > 2 ? '（' + Math.round(ageH) + ' 小时前）' : '');
-      hw.style.color = ageH > 2 ? '#b05e12' : '';
-    } else {
-      hw.textContent = '未配置 / 未验证';
-      hw.style.color = '#b05e12';
-    }
     // Qoder 令牌：约 30 天寿命，<3 天由服务端发 qoder_token_expiring 告警
     var qd = document.getElementById('qd');
     if (j.qoderTokenDaysMin != null) {

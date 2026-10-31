@@ -7,8 +7,7 @@ const fs = require('fs');
 const path = require('path');
 // 纯函数（日期/Cookie/base 校验/状态判定）集中在 lib.js，可单测；这里只管编排与 IO。
 const {
-  cnDateStr, parseCookieStr, cookieToStr, daysLeft, validBase, statusWorkbuddy, statusTrae,
-  hwCookieCheck,
+  cnDateStr, daysLeft, validBase, statusWorkbuddy, statusTrae,
 } = require('./lib');
 
 const PORT = Number(process.env.PORT || 8080);
@@ -21,7 +20,6 @@ const REFRESH_CHECK_MINUTES = 360;       // 每 6 小时检查一次续期
 // 签到本身早就跳过——20 分钟一轮 ≈ 7000 请求/天，纯属烧对方的接口。
 const BUDDY_MINUTES = Number(process.env.BUDDY_MINUTES || 120);        // 猫猫：2 小时跑一次（约 1200 请求/天）
 const BALANCE_MINUTES = Number(process.env.BALANCE_MINUTES || 360);    // 余额：6 小时查一次
-const CODEARTS_PROBE_MINUTES = Number(process.env.CODEARTS_PROBE_MINUTES || 360); // 码道保活探针：6 小时
 // 保底自刷：refreshOwner=magpie 时，若 magpie 连续这么多天没同步、且 access 快到期，
 // 云端破例自己刷一次（否则必然断）。设 fallbackRefresh=false 可完全禁用。
 const FALLBACK_AFTER_DAYS = Number(process.env.FALLBACK_AFTER_DAYS || 7);
@@ -300,27 +298,6 @@ const PLATFORMS = [
     status: statusTrae,
   },
   {
-    key: 'codearts',
-    label: '码道',
-    accounts: () => (CFG && CFG.codearts && CFG.codearts.accounts) || [],
-    status(st, a, today) {
-      const r = ((st.codearts || {})[a.name]) || {};
-      const done = r.day === today && r.outcome === 'claimed';
-      return {
-        done,
-        credit: done ? Number(r.credit) || 0 : 0,
-        streak: Number(r.streak) || 0,
-        // needauth＝华为侧会话 Cookie 失效（HttpOnly，只能由人工重新导出）。
-        // 归入「受限」而非「失败」：服务端没有任何自愈手段，报 ✗ 只会天天误报。
-        state: done ? 'ok'
-          : r.outcome === 'needauth' ? 'needauth'
-          : r.outcome === 'nocookie' ? 'needauth'
-          : (r.day === today ? 'fail' : 'pending'),
-        note: r.note || '',
-      };
-    },
-  },
-  {
     key: 'qoder',
     label: 'Qoder',
     accounts: () => (CFG && CFG.qoder && CFG.qoder.accounts) || [],
@@ -581,7 +558,6 @@ async function tick() {
     }
     if (buddyDue) st.buddyAt = new Date().toISOString();
     try { await traeRound(st); } catch (e) { log('Trae 轮异常: ' + (e && e.message || e)); }
-    try { await codeartsRound(st); } catch (e) { log('码道 轮异常: ' + (e && e.message || e)); }
     try { await qoderRound(st); } catch (e) { log('Qoder 轮异常: ' + (e && e.message || e)); }
     try { await refreshBalances(st); } catch (e) { log('余额刷新异常: ' + (e && e.message || e)); }
   } finally {
@@ -695,223 +671,6 @@ async function traeRound(st) {
     }
     saveState(st);
   }
-}
-
-// ---------- 华为码道（CodeArts / DevCloud）每日签到 ----------
-// 接口（码道 chat PromptCenterService，实测 2026-10）：
-//   查活动  GET  /v1/ops/delivery?channel=WEB      → data.items[] 里 campaignId + status
-//   领取    POST /v1/ops/claim   {campaignId, idempotentKey:"claim_<cid>_<ts>", channel:"WEB"}
-//   确认    POST /v1/ops/confirm {campaignId}
-// 鉴权：Cookie（devclouddevuibjJ_SESSION_ID 等，**HttpOnly**）+ 由 cookie
-//       devclouddevuibjtcftk 派生出的请求头 cftk（华为的 CSRF 令牌）。
-// 两个硬约束（决定了这套代码的形状）：
-//   1) campaignId 随活动轮次变（曾 1 → 34），必须用 delivery 实时返回的值，写死必报
-//      「运营事件未生效或已结束」。
-//   2) 会话 Cookie 是 HttpOnly → 云端无法自行登录，只能人工导出。
-//      实测（2026-10-29）：
-//        · 接口调用与 GET /chat/home 都**不会**换发新的 devclouddevuibjJ_SESSION_ID
-//          （只回 BENSESSCC_TAG 之类），即「绝对有效期」而非滑动续期；
-//        · 云端每 20 分钟轮询也没能把它续住：10:55 还可用，13:10 同一份 cookie
-//          就已经凉了 —— 大约 1~2 小时死透；
-//        · **失效的表象是 HTTP 200 + 空 body（不是 401）**，所以判定必须按
-//          「200 但解析不出 JSON」也算 needauth，否则会误判成网络故障。
-//      结论：别指望自愈。日常节奏＝看板看到 🔑 时粘一份新 cookie，服务端当场实测并
-//      立刻补签（见 /codearts-cookie）。每轮仍合并 Set-Cookie：万一华为哪天改成换发，
-//      这条链路白捡；同时用「最近一次 delivery code=0」＝ sessionOkAt 作存活硬证据。
-const HW_BASE = 'https://devcloud.cn-north-4.huaweicloud.com/chat/PromptCenterService';
-const HW_HOME = 'https://devcloud.cn-north-4.huaweicloud.com/chat/home';
-const HW_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0.0';
-const HW_COOKIE_KEY = 'devclouddevuibjJ_SESSION_ID';
-
-// parseCookieStr / cookieToStr 见 src/lib.js（纯函数，已单测）
-
-// 把响应里的 Set-Cookie 合并回账号凭据。华为网关每次访问都可能续期会话，
-// 丢掉这条链路，Cookie 就会在 30~60 分钟后静置过期 —— 这是云端能自持的关键。
-// 返回是否发生改动；只有「会话票据本身」更新才算一次续期（cookieAt），
-// 网关顺带塞的埋点 cookie 更新时不改 cookieAt，否则健康度会显得虚高。
-function hwMergeSetCookie(a, list) {
-  if (!list || !list.length) return false;
-  const m = parseCookieStr(a.cookie);
-  let changed = false, renewed = false;
-  for (const sc of list) {
-    const first = String(sc).split(';')[0];
-    const i = first.indexOf('=');
-    if (i <= 0) continue;
-    const k = first.slice(0, i).trim(), v = first.slice(i + 1).trim();
-    if (!k) continue;
-    const dead = /;\s*max-age=0\b/i.test(sc) || /expires=thu,\s*01\s*jan\s*1970/i.test(sc);
-    if (dead) { if (k in m) { delete m[k]; changed = true; } continue; }
-    if (v && m[k] !== v) {
-      m[k] = v; changed = true;
-      if (k === HW_COOKIE_KEY) renewed = true;
-    }
-  }
-  if (changed) {
-    a.cookie = cookieToStr(m);
-    a.cookieTouchedAt = new Date().toISOString();
-    if (renewed) a.cookieAt = a.cookieTouchedAt;   // 会话真正续期的时间
-  }
-  return changed;
-}
-
-async function hwApi(a, urlPath, method, body, timeoutMs) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs || 25000);
-  try {
-    const m = parseCookieStr(a.cookie);
-    const headers = {
-      'user-agent': HW_UA,
-      // 华为网关靠这几个头判断"这是接口调用"；缺了会返回 SPA 的 HTML 而非 JSON
-      'agent-type': 'PromptCenter',
-      'x-language': 'zh-cn',
-      'language': 'zh-cn',
-      'x-requested-with': 'XMLHttpRequest',
-      'accept': 'application/json, text/plain, */*',
-      'referer': HW_HOME,
-      'cookie': a.cookie || '',
-    };
-    if (m.devclouddevuibjtcftk) headers['cftk'] = m.devclouddevuibjtcftk;
-    let url = HW_BASE + urlPath;
-    const opt = { method: method || 'GET', headers, signal: ctrl.signal };
-    if (body !== undefined) { headers['content-type'] = 'application/json'; opt.body = JSON.stringify(body); }
-    // GET 带浏览器同款缓存戳，否则可能命中网关缓存拿到旧状态
-    if ((method || 'GET') === 'GET') url += (url.indexOf('?') >= 0 ? '&' : '?') + '_=' + Date.now();
-    const r = await fetch(url, opt);
-    const text = await r.text();
-    let j = null; try { j = JSON.parse(text); } catch {}
-    let sc = [];
-    try {
-      sc = typeof r.headers.getSetCookie === 'function' ? r.headers.getSetCookie()
-        : (r.headers.get('set-cookie') ? [r.headers.get('set-cookie')] : []);
-    } catch { sc = []; }
-    return { status: r.status, json: j, raw: text.slice(0, 200), setCookies: sc };
-  } catch (e) {
-    return { status: -1, json: null, raw: String((e && e.message) || e), setCookies: [] };
-  } finally { clearTimeout(t); }
-}
-
-function hwFindDaily(items) {
-  if (!Array.isArray(items)) return null;
-  for (const x of items) {
-    if (!x || typeof x !== 'object') continue;
-    if (x.campaignId === 1 || x.type === 'USER_LOGIN' || x.type === 'DAILY_CLAIM') return x;
-  }
-  return null;
-}
-
-const HW_DONE_STATUS = ['CLAIMED', 'CONFIRMED', 'CONSUMED'];
-
-async function codeartsRound(st) {
-  const list = (CFG.codearts && CFG.codearts.accounts) || [];
-  if (!list.length) return;
-  const today = cnDateStr();
-  st.codearts = st.codearts || {};
-  let cfgDirty = false;
-  for (const a of list) {
-    const rec = st.codearts[a.name] || (st.codearts[a.name] = {});
-    if (!a.cookie || a.cookie.indexOf(HW_COOKIE_KEY) < 0) {
-      rec.day = today; rec.outcome = 'nocookie';
-      rec.note = '未配置会话 Cookie（' + HW_COOKIE_KEY + '）';
-      continue;
-    }
-    // 今天已领成功 → 不再每轮打接口。华为会话探活也只在超过 CODEARTS_PROBE_MINUTES
-    // 才做一次：实测会话 1~2 小时就死、接口轮询续不住，每轮都探只是徒增请求。
-    if (rec.day === today && rec.outcome === 'claimed') {
-      const lastProbe = rec.probeAt ? new Date(rec.probeAt).getTime() : 0;
-      if (Date.now() - lastProbe >= CODEARTS_PROBE_MINUTES * 60000) {
-        try {
-          const ka = await hwApi(a, '/v1/ops/delivery?channel=WEB');
-          if (hwMergeSetCookie(a, ka.setCookies)) cfgDirty = true;
-          if (ka.status === 200 && ka.json && ka.json.code === 0) { a.sessionOkAt = new Date().toISOString(); cfgDirty = true; }
-          rec.probeAt = new Date().toISOString();
-        } catch { /* 探活失败不影响当日结论 */ }
-      }
-      if (rec.dbDay !== today) {
-        dbEventOnce('码道:' + a.name, 'codearts_checkin', '今日已签（幂等跳过）+' + (rec.credit || 0), { credit: rec.credit }).then(ok => { if (ok) rec.dbDay = today; });
-      }
-      saveState(st);
-      continue;
-    }
-    try {
-      const d = await hwApi(a, '/v1/ops/delivery?channel=WEB');
-      if (hwMergeSetCookie(a, d.setCookies)) cfgDirty = true;
-      rec.day = today; rec.at = new Date().toISOString();
-      if (d.status === 401 || d.status === 403 || d.status === 302 || d.status === 301) {
-        rec.outcome = 'needauth';
-        // 说清边界：只读探活只能"防止闲置失效"，换不出新票据；华为侧要换票只能重新登录。
-        rec.note = '会话失效 HTTP ' + d.status + '（需重新登录换新 Cookie；只读探活无法续发票据）';
-        log('码道 ' + a.name + ' 会话失效 HTTP ' + d.status + '，需重新登录换新 Cookie（只读探活无法续发票据）');
-        dbEvent('码道:' + a.name, 'codearts_auth', '会话失效 HTTP ' + d.status, {});
-        continue;
-      }
-      const dj = d.json;
-      if (d.status !== 200 || !dj || dj.code !== 0) {
-        // 拿不到 JSON（网关回 SPA/HTML）也按"会话不可用"处理，因为正常情况必有 JSON
-        rec.outcome = d.status === 200 && !dj ? 'needauth' : 'failed';
-        rec.note = (dj && (dj.message || dj.msg)) || ('HTTP ' + d.status + (dj ? ' code=' + dj.code : '（非 JSON 响应）'));
-        log('码道 ' + a.name + ' 查询失败：' + rec.note);
-        continue;
-      }
-      const items = (dj.data && dj.data.items) || [];
-      // delivery 返回 code=0＝会话此刻确凿可用，记成硬证据（华为不换发票据，这是唯一可靠信号）
-      a.sessionOkAt = new Date().toISOString(); cfgDirty = true;
-      const camp = hwFindDaily(items);
-      if (!camp) {
-        rec.outcome = 'failed'; rec.note = '未找到每日签到活动（可能已下线）';
-        log('码道 ' + a.name + ' 未找到每日签到活动，items=' + items.length);
-        continue;
-      }
-      const cid = camp.campaignId;
-      const amount = Number(camp.benefitAmount) || 0;
-      const unit = camp.benefitUnit === 'CREDIT' || !camp.benefitUnit ? '积分' : camp.benefitUnit;
-      rec.unit = unit;
-      if (HW_DONE_STATUS.indexOf(camp.status) >= 0) {
-        rec.outcome = 'claimed'; rec.credit = amount; rec.note = '今日已签（幂等跳过）';
-        log('码道 ' + a.name + ' 今日已签 ' + amount + ' ' + unit);
-        if (rec.dbDay !== today) {
-          dbEventOnce('码道:' + a.name, 'codearts_checkin', '今日已签（幂等跳过）+' + amount, { credit: amount, campaignId: cid }).then(ok => { if (ok) rec.dbDay = today; });
-        }
-        continue;
-      }
-      if (cid == null) { rec.outcome = 'failed'; rec.note = '活动缺少 campaignId'; continue; }
-      const claim = await hwApi(a, '/v1/ops/claim', 'POST',
-        { campaignId: cid, idempotentKey: 'claim_' + cid + '_' + Date.now(), channel: 'WEB' });
-      if (hwMergeSetCookie(a, claim.setCookies)) cfgDirty = true;
-      const cj = claim.json || {};
-      if (cj.code !== 0) {
-        rec.outcome = 'failed';
-        rec.note = String(cj.message || cj.msg || ('领取失败 HTTP ' + claim.status)).slice(0, 60);
-        log('码道 ' + a.name + ' 领取失败：' + rec.note);
-        dbEvent('码道:' + a.name, 'codearts_fail', '领取失败：' + rec.note, { campaignId: cid });
-        continue;
-      }
-      const conf = await hwApi(a, '/v1/ops/confirm', 'POST', { campaignId: cid });
-      if (hwMergeSetCookie(a, conf.setCookies)) cfgDirty = true;
-      const fj = conf.json || {};
-      if (fj.code !== 0) {
-        // claim 成功但 confirm 失败：华为侧多数已生效，先记 claimed 但留痕，第二天 delivery 会自证
-        rec.outcome = 'claimed';
-        rec.note = '已领取但确认失败：' + String(fj.message || fj.msg || ('HTTP ' + conf.status)).slice(0, 40);
-        log('码道 ' + a.name + ' ⚠ 领取成功但确认失败：' + rec.note);
-      } else {
-        rec.outcome = 'claimed'; rec.note = '';
-        log('码道 ' + a.name + ' ✅ 签到成功 +' + amount + ' ' + unit);
-      }
-      rec.credit = amount;
-      if (rec.dbDay !== today) {
-        dbEventOnce('码道:' + a.name, 'codearts_checkin',
-          '码道签到成功 +' + amount + ' ' + unit, { credit: amount, campaignId: cid }).then(ok => { if (ok) rec.dbDay = today; });
-      }
-    } catch (e) {
-      rec.day = today; rec.outcome = 'failed';
-      rec.note = String((e && e.message) || e).slice(0, 60);
-      log('码道 ' + a.name + ' 异常：' + rec.note);
-    } finally {
-      saveState(st);
-    }
-  }
-  // 会话续期只在真有变化时落盘，避免每轮重写 config
-  if (cfgDirty) { try { saveCfg(); } catch {} }
 }
 
 // ---------- Qoder 每日 100 Credits ----------
@@ -1248,17 +1007,6 @@ const server = http.createServer((req, res) => {
       return isNaN(t) ? null : (t - Date.now()) / 86400000;
     }).filter(x => x != null);
     if (traeDays.some(d => d < 1.5)) kinds.add('trae_token_expiring');
-    // 码道：会话 Cookie 是 HttpOnly 短效凭据，云端只能续期不能自愈；
-    // 一旦落到 needauth 就是人工动作（重新导出 Cookie），单独给一种告警类别。
-    const hwRows = sum.rows.filter(r => r.platform === 'codearts');
-    if (hwRows.some(r => r.state === 'needauth')) kinds.add('codearts_auth');
-    // 实测（2026-10-29）：华为 devcloud 会话约 1~2 小时死透，且**纯接口轮询续不住**
-    // （响应只回 BENSESSCC_TAG，不换发新的 J_SESSION_ID；换发要有已登录浏览器里的 SSO cookie）。
-    // 所以：今天已签上就不算异常（不因"会话凉了"报警——那是常态）；
-    // 真正的信号是"今天没签上且会话已死"＝needauth，需要人工重导。
-    // codeartsSessionAlive 只作展示：最近一次被证明可用是几点。
-    const hwAt = (CFG.codearts && CFG.codearts.accounts || [])
-      .map(a => a.sessionOkAt).filter(Boolean).sort().pop() || null;
     // Qoder：dt- token 约 30 天且云端绝不自刷（会顶掉客户端登录态）→ 剩 3 天内预警
     const qdList = (CFG.qoder && CFG.qoder.accounts) || [];
     const qdDays = qdList.map(a => a.tokenExpiresAt ? (new Date(a.tokenExpiresAt).getTime() - Date.now()) / 86400000 : null)
@@ -1280,7 +1028,6 @@ const server = http.createServer((req, res) => {
       },
       tokenDaysMin: tokenDays.length ? Math.min(...tokenDays) : null,
       traeTokenDaysMin: traeDays.length ? Math.round(Math.min(...traeDays) * 10) / 10 : null,
-      codeartsSessionOkAt: hwAt,   // 码道会话最近一次被证明可用的时间（delivery 返回 code=0）
       qoderTokenDaysMin: qdDays.length ? Math.round(Math.min(...qdDays) * 10) / 10 : null,
       // 刷新主管：magpie＝本机负责续期、云端只借 access（默认，避免两边抢链）；cloud＝云端自己刷
       refreshOwner: CFG.refreshOwner || 'magpie',
@@ -1332,63 +1079,6 @@ const server = http.createServer((req, res) => {
       alertCount: kinds.size,
       cloudDb: CLOUD_DB ? (CLOUD_OK ? 'ok' : 'init-only') : 'off',
     });
-  }
-
-  // 更新码道会话 Cookie（受 access_key 保护）。
-  // 华为会话是 HttpOnly 短效凭据（静置 30~60 分钟失效），且云端无权自行登录。
-  // 给个网页入口：粘完当场实测，能用才落盘，不让人靠猜。
-  if (urlObj.pathname === '/codearts-cookie' && req.method === 'POST') {
-    if (!authed(req, urlObj)) return send(401, { ok: false, error: '需要 access_key' });
-    readJson(req, 20000, async b => {
-      const cookie = String(b.cookie || '').trim();
-      const wantName = String(b.account || '').trim();
-      if (!cookie) return send(400, { ok: false, error: 'cookie 不能为空' });
-      // 硬要求 SESSION_ID + tcftk：缺 tcftk 时请求多半拿到 HTML/鉴权失败，
-      // 用户会以为"cookie 明明复制对了却不行"，所以在落盘前就拦下来说清楚。
-      const chk = hwCookieCheck(cookie);
-      if (chk.missing.length) {
-        return send(400, {
-          ok: false,
-          error: 'Cookie 不完整，缺少：' + chk.missing.join('、') +
-            '。请在 F12 → Network → 任一 PromptCenterService 请求里复制完整的 cookie 请求头（不是 document.cookie，HttpOnly 的拿不到）',
-          missing: chk.missing,
-        });
-      }
-      if (!CFG.codearts) CFG.codearts = { accounts: [], note: '' };
-      if (!Array.isArray(CFG.codearts.accounts)) CFG.codearts.accounts = [];
-      const list = CFG.codearts.accounts;
-      let a = wantName ? list.find(x => x.name === wantName) : list[0];
-      if (!a) { a = { name: wantName || '码道-默认' }; list.push(a); }
-      // 只在实测通过后才落盘：失败则保留旧 Cookie，避免把还能用的凭据换掉
-      const bak = a.cookie || '';
-      a.cookie = cookie;
-      const rr = await hwApi(a, '/v1/ops/delivery?channel=WEB');
-      hwMergeSetCookie(a, rr.setCookies);
-      const jj = rr.json || {};
-      if (!(rr.status === 200 && jj.code === 0)) {
-        a.cookie = bak;
-        const why = (jj && (jj.message || jj.msg)) || ('HTTP ' + rr.status + (rr.json ? ' code=' + jj.code : '（非 JSON 响应，多半是登录态无效）'));
-        log('码道 ' + a.name + ' 看板提交的 Cookie 实测未通过：' + String(why).slice(0, 60));
-        return send(200, { ok: false, verified: false, error: String(why).slice(0, 160) });
-      }
-      const camp = hwFindDaily((jj.data && jj.data.items) || []);
-      a.cookieAt = new Date().toISOString();
-      a.sessionOkAt = a.cookieAt;
-      a.cookieSource = 'panel';
-      saveCfg();
-      const note = camp ? ('活动在线，当前状态 ' + (camp.status || '?') + '，本次可领 ' + (camp.benefitAmount != null ? camp.benefitAmount : '?') + ' ' + (camp.benefitUnit === 'CREDIT' || !camp.benefitUnit ? '积分' : camp.benefitUnit)) : '登录态有效，但暂未发现每日签到活动';
-      log('码道 ' + a.name + ' 会话 Cookie 已由看板更新并实测通过');
-      // 立刻补签一次（当天还没签的话），让用户提交完就能看到结果。
-      // 与 tick 互斥：撞上正在跑的一轮就不并发跑（否则 state 丢更新），如实告知稍后自动补。
-      const ran = await runRoundExclusive(() => codeartsRound(state()), '码道 提交后补签');
-      return send(200, {
-        ok: true, verified: true, account: a.name, note, ran,
-        // 缺 WAF/agency 类 cookie 不阻断，但告知：部分接口在缺少时会偶发失败
-        warnings: chk.missingSoft.length ? ['Cookie 缺少（通常不影响签到，遇到偶发失败再补）：' + chk.missingSoft.join('、')] : [],
-        msg: ran ? '已保存，已立刻补签一次' : '已保存，正在跑一轮，稍后自动补签',
-      });
-    });
-    return;
   }
 
   // 更新 Qoder 凭据（受 access_key 保护）：{token:"dt-...", fingerprint:{...}, expiresAt}
@@ -1448,7 +1138,7 @@ const server = http.createServer((req, res) => {
       }
       saveCfg();
       log('Qoder ' + a.name + ' 凭据已由看板更新并实测通过（campaigns=' + c.json.campaigns.length + '）');
-      // 同 /codearts-cookie：与 tick 互斥，撞上就不并发跑，避免 state 丢更新
+      // 与 tick 互斥：撞上正在跑的一轮就不并发跑，避免 state 丢更新
       const ran = await runRoundExclusive(() => qoderRound(state()), 'Qoder 提交后补领');
       return send(200, {
         ok: true, verified: true, account: a.name, ran,
@@ -1577,13 +1267,13 @@ const server = http.createServer((req, res) => {
     const bj = ms => ms ? new Date(ms + 8*3600*1000).toISOString().slice(0,16).replace('T',' ') + ' 北京时间' : '—';
     const lastTick = st.lastTickAt ? bj(new Date(st.lastTickAt).getTime()) : '—';
     const lastOk = st.lastOkAt ? bj(new Date(st.lastOkAt).getTime()) : '—';
-    const kinds = { token_expiring:'令牌将过期', checkin_pending:'今日签到未完成', stale:'服务长时间未跑', business_stale:'业务结果长时间未更新', codearts_auth:'码道会话需重新导入', trae_token_expiring:'Trae 令牌将过期', qoder_cred:'Qoder 凭据需重导', qoder_token_expiring:'Qoder 令牌将过期' };
+    const kinds = { token_expiring:'令牌将过期', checkin_pending:'今日签到未完成', stale:'服务长时间未跑', business_stale:'业务结果长时间未更新', trae_token_expiring:'Trae 令牌将过期', qoder_cred:'Qoder 凭据需重导', qoder_token_expiring:'Qoder 令牌将过期' };
     const today2 = cnDateStr();
     // 全平台完成度统一走注册表（原来只数 WorkBuddy，加平台后公网页会假报"无告警"）
     const sum2 = checkinSummary(st);
     const kinds2 = new Set();
     if (sum2.pending > 0) kinds2.add('checkin_pending');
-    if (sum2.rows.some(r => r.state === 'needauth')) kinds2.add('codearts_auth');
+    if (sum2.rows.some(r => r.platform === 'qoder' && r.state === 'needauth')) kinds2.add('qoder_cred');
     const tokenDays2 = CFG.accounts.map(x => daysLeft(x.expiresAt)).filter(v => v != null);
     if (tokenDays2.length && Math.min(...tokenDays2) <= 3) kinds2.add('token_expiring');
     const staleH2 = st.lastTickAt ? (Date.now() - new Date(st.lastTickAt).getTime())/3600000 : null;
@@ -1619,13 +1309,12 @@ const server = http.createServer((req, res) => {
   // /config /tick /refresh）都必须带 access_key，包括 POST /tick、POST /refresh 这两个写端点
   // —— 文档承诺 /tick 需 key；无鉴权时任何人都能触发整轮（一轮约 97 个请求），还能反复占用
   // TICK_RUNNING 把正常轮次挤掉。此闸门之前的分支（/health 的公开摘要、静态页）以及
-  // 各自做鉴权的三个凭据写入端点（/codearts-cookie /qoder-cred /sync-from-magpie）不经过这里。
+  // 各自做鉴权的两个凭据写入端点（/qoder-cred /sync-from-magpie）不经过这里。
   if (!authed(req, urlObj)) return send(401, { ok: false, msg: '未授权' });
   if (urlObj.pathname === '/probe' && req.method === 'GET') {
     // [deploy] 出网探测：验证云沙箱能否访问第三方平台域名（决定能否云端代签）
     const targets = [
       ['trae', 'https://api.trae.cn/cloudide/api/v3/common/GetUserToken', 'POST'],
-      ['huawei', 'https://devcloud.cn-north-4.huaweicloud.com/chat/PromptCenterService/v1/ops/delivery?channel=WEB', 'GET'],
       ['qoder_cn', 'https://openapi.qoder.com.cn/sash/api/v1/me/campaigns', 'GET'],
       ['qoder_sh', 'https://openapi.qoder.sh/sash/api/v1/me/campaigns', 'GET'],
       ['github', 'https://codeload.github.com', 'GET'],
@@ -1701,11 +1390,10 @@ const server = http.createServer((req, res) => {
           // 按「账号 × 北京时间日期」去重，而不是数行数：
           // 早期版本重复部署会重复写同一天同一账号，行数会虚高；这里保证口径恒定正确。
           // 平台归属由事件 kind 决定，卡片按 PLATFORMS 注册表动态生成——
-          // 以前这里硬编码了 WorkBuddy/Trae 三张卡，加码道/Qoder 后就漏统计了。
+          // 以前这里硬编码了 WorkBuddy/Trae 三张卡，后续加平台就漏统计了。
           const KIND_PLATFORM = {
             checkin: 'workbuddy', wb_checkin: 'workbuddy',
             trae_checkin: 'trae', trae_fail: 'trae',
-            codearts_checkin: 'codearts', codearts_auth: 'codearts', codearts_fail: 'codearts',
             qoder_checkin: 'qoder', qoder_fail: 'qoder', qoder_auth: 'qoder',
           };
           const cnt = Object.create(null);
@@ -1750,7 +1438,7 @@ const server = http.createServer((req, res) => {
         const ev = await CLOUD_DB.database.from('wbmon_events').select('account, kind, detail, created_at')
           .neq('kind', 'selftest').order('id', { ascending: false }).limit(12);
         if (!ev.error) {
-          // 事件里存的账号形如 "Qoder:别名"/"码道:别名"，前缀与名字重复时只留名字
+          // 事件里存的账号形如 "Qoder:别名"，前缀与名字重复时只留名字
           const cleanAcct = (raw) => {
             const s = String(raw || '');
             const i = s.indexOf(':');
@@ -1815,7 +1503,7 @@ const server = http.createServer((req, res) => {
       // 首次使用：一个账号都没配时给明确指引，而不是留一片空白
       (sum.total === 0
         ? '<div class=card style="margin:0 0 16px"><b style="font-size:.95rem;color:#8a5a68">还没有配置任何账号</b>' +
-          '<span>编辑 config.json 的 accounts（WorkBuddy）/ trae.accounts / codearts.accounts / qoder.accounts，' +
+          '<span>编辑 config.json 的 accounts（WorkBuddy）/ trae.accounts / qoder.accounts，' +
           '或跑 <code>node scripts/magpie-auth.mjs --login all</code> 自动导入；保存后重启生效。</span></div>'
         : '') +
       '<div class=brief>余额（Credits，只给剩余）：' + (function () {
@@ -1862,58 +1550,6 @@ const server = http.createServer((req, res) => {
         return '<h2>Trae CN</h2><table><tr><th>账号</th><th>今日签到</th><th>余额</th><th>令牌</th></tr>' + rows2 + '</table>';
         } catch (e) { try { log('看板 Trae 段渲染失败：' + (e && e.message || e)); } catch (_) {} return '<h2>Trae CN</h2><div class=lg>该段渲染失败：' + String((e && e.message) || e) + '</div>'; }
       })() +
-      // 码道：专属表格 + 会话 Cookie 更新入口（凭据是人给的，界面就得给回填的地方）
-      (function () {
-        try {
-          const hl = (CFG.codearts && CFG.codearts.accounts) || [];
-          if (!hl.length) return '';
-          const rows3 = hl.map(a => {
-            const r = (st.codearts || {})[a.name] || {};
-            const done = r.day === today && r.outcome === 'claimed';
-            const cell = done
-              ? '<span class=ok>✓ 已签' + ((Number(r.credit) || 0) ? ' +' + r.credit : '') + '</span>'
-              : r.outcome === 'nocookie' ? '<span class=w' + 'arn>🔑 未配置 Cookie</span>'
-              : r.outcome === 'needauth' ? '<span class=w' + 'arn>🔑 会话失效，需重导</span>'
-              : r.day === today ? '<span class=w' + 'arn>✗ ' + esc(r.note || '今日未签') + '</span>'
-              : '<span class=w' + 'arn>⏳ 今日尚未运行</span>';
-            const at = a.sessionOkAt ? String(a.sessionOkAt).replace('T', ' ').slice(5, 16) : '—';
-            const stale = a.sessionOkAt && (Date.now() - new Date(a.sessionOkAt).getTime()) > 2 * 3600000;
-            const touched = a.cookieTouchedAt ? String(a.cookieTouchedAt).replace('T', ' ').slice(5, 16) : '—';
-            return '<tr><td data-l="账号">' + esc(a.name) + '</td><td data-l="今日签到">' + cell + '</td><td data-l="会话最近可用">' + (stale ? '<span class=warn>' + at + '</span>' : at) + '</td><td data-l="Cookie 变动">' + touched + '</td></tr>';
-          }).join('');
-          const first = (hl[0] && hl[0].name) || '';
-          return '<h2>码道（华为 CodeArts）</h2>' +
-            '<table><tr><th>账号</th><th>今日签到</th><th>会话最近可用</th><th>Cookie 变动</th></tr>' + rows3 + '</table>' +
-            '<div class=lg style="margin-top:8px">实测（2026-10-29）：这个会话约 1~2 小时就失效，而且<b>云端纯接口轮询续不住</b>' +
-            '（响应不换发新的 J_SESSION_ID，续期要靠已登录浏览器里的 SSO cookie）。<br>' +
-            '所以日常节奏是：看到本行变成 🔑 或战报提示「待重导凭据」时，浏览器登录 ' +
-            '<b>devcloud.cn-north-4.huaweicloud.com/chat/home</b> → F12 → Network → 任一 PromptCenterService 请求 → ' +
-            '复制 Request Headers 里的 <b>cookie:</b> 整行（含 ' + HW_COOKIE_KEY + ' 与 devclouddevuibjtcftk）粘到下面。' +
-            '<b>保存即实测、当天立刻补签</b>，不用等下一轮。</div>' +
-            '<div class=lg>余额：码道的积分要华为云 IAM 签名（AK/SK+DPoP）才读得到，云端只有 web 会话 Cookie，' +
-            '所以这张表不显示余额；要看积分请到码道自己的用量页。</div>' +
-            '<div style="margin:8px 0"><textarea id=hwck placeholder="devclouddevuibjJ_SESSION_ID=...; devclouddevuibjtcftk=..." ' +
-            'style="width:100%;height:64px;font-family:ui-monospace,monospace;font-size:.75rem;padding:8px;border:1px solid #e8ddd6;border-radius:8px;background:#fff;color:#4a3f3c"></textarea>' +
-            '<div style="display:flex;gap:8px;align-items:center;margin-top:6px">' +
-            '<button id=hwbtn type=button style="padding:8px 16px;border:0;border-radius:8px;background:#8a5a68;color:#fff;font-size:.85rem;cursor:pointer">保存并验证</button>' +
-            '<span id=hwmsg style="font-size:.78rem;color:#a08a80"></span></div></div>' +
-            '<script>(function(){' +
-            // 面板原本 60 秒整页刷新：粘贴长 Cookie 时会把输入冲掉，改成"输入框有内容就不刷"
-            'var mr=document.querySelector("meta[http-equiv=refresh]");if(mr)mr.remove();' +
-            'setInterval(function(){var t2=document.getElementById("hwck");if(!t2||!t2.value)location.reload();},60000);' +
-            'var b=document.getElementById("hwbtn"),t=document.getElementById("hwck"),m=document.getElementById("hwmsg");' +
-            'if(!b)return;b.onclick=function(){var v=(t.value||"").trim();if(!v){m.textContent="先粘贴 Cookie";return;}' +
-            'm.textContent="验证中…";b.disabled=true;' +
-            // 必须带上页面现有的 key + sharecode：平台网关对不带 sharecode 的 POST 直接拦掉
-            'var u="codearts-cookie?"+new URLSearchParams(location.search).toString();' +
-            'fetch(u,' +
-            '{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({cookie:v,account:' + JSON.stringify(first) + '})})' +
-            '.then(function(r){return r.text()}).then(function(x){var j={};try{j=JSON.parse(x)}catch(e){}' +
-            'if(j.verified){m.textContent="✓ 已保存："+(j.note||"登录态有效")+"，3 秒后刷新";setTimeout(function(){location.reload()},3000);}' +
-            'else{m.textContent="✗ "+(j.error||x||"验证失败");b.disabled=false;}})' +
-            '.catch(function(e){m.textContent="✗ "+e.message;b.disabled=false;});};})();</script>';
-        } catch (e) { return '<h2>码道</h2><div class=lg>该段渲染失败：' + String((e && e.message) || e) + '</div>'; }
-      })() +
       // Qoder：专属表格 + 凭据更新入口（token/指纹都是本机出的，界面就得给回填的地方）
       (function () {
         try {
@@ -1944,7 +1580,7 @@ const server = http.createServer((req, res) => {
       // 新平台若还没有专属表格，这里按注册表自动生成一张通用表 —— 加平台不必改看板
       (function () {
         try {
-          const bespoke = { workbuddy: 1, trae: 1, codearts: 1, qoder: 1 };
+          const bespoke = { workbuddy: 1, trae: 1, qoder: 1 };
           return PLATFORMS.filter(p => !bespoke[p.key]).map(p => {
             const rs = sum.rows.filter(r => r.platform === p.key);
             if (!rs.length) return '';
@@ -2113,13 +1749,7 @@ server.listen(PORT, '0.0.0.0', () => {
  *        Trae     ：config.trae.accounts[]
  *      今日签到、看板、/health、/digest 会自动从 N/N 变成 N+1/N+1。
  *
- *      现成平台：WorkBuddy（config.accounts[]）/ Trae（config.trae.accounts[]）
- *                / 码道（config.codearts.accounts[]，需 cookie 字段）
- *
- *      码道账号的最小形状：
- *        { "name": "码道-主号", "cookie": "devclouddevuibjJ_SESSION_ID=...; devclouddevuibjtcftk=..." }
- *      cookie 是 HttpOnly 的会话票据，只能从浏览器（已登录华为云）DevTools 导出；
- *      服务端每轮会把响应里的 Set-Cookie 合并回去续期，断供才会落到 needauth。
+ *      现成平台：WorkBuddy（config.accounts[]）/ Trae（config.trae.accounts[]）/ Qoder（config.qoder.accounts[]）
  *
  * 2) 接入一个新平台（既要在汇总里出现，也要真去签到）
  *    a. 展示层：在 PLATFORMS 数组里加一个对象（accounts + status 两个方法），
@@ -2134,7 +1764,7 @@ server.listen(PORT, '0.0.0.0', () => {
  *      { done:boolean, credit:number, streak:number,
  *        state:'ok'|'fail'|'pending'|'busy'|'nodev'|'needauth', note:string }
  *    busy / nodev / needauth 会被视作「受限而非失败」，战报不会误报为 ⚠️。
- *    needauth＝凭据必须人工重导（如码道 HttpOnly 会话），服务端无权自愈。
+ *    needauth＝凭据必须人工重导（如 Qoder 令牌过期），服务端无权自愈。
  *
  * 4) 示例（Qoder，未启用，复制到 PLATFORMS 里改配置即可）：
  *

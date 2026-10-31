@@ -50,19 +50,7 @@
 | `profile` | — | 设备指纹：`ua` / `brand` / `type` / `os` / `appVersion`，与服务端校验的设备画像保持一致更稳 |
 
 **错误码**：`9074` = 该号当前无可信设备（未在客户端登录）；`9095` = 该设备今天的名额已被别的账号占用。两者都不算故障，看板会分别标注。
-
-## 5. `codearts.accounts[]` —— 华为云码道
-
-| 字段 | 必填 | 说明 |
-|---|---|---|
-| `name` | ✅ | 账号标签 |
-| `cookie` | ✅ | 浏览器会话 Cookie 串，必须含 `devclouddevuibjJ_SESSION_ID` |
-| `sessionOkAt` | — | 上次实测可用的时间（服务端回写） |
-| `cookieAt` / `cookieTouchedAt` | — | 会话续期/改动时间（服务端回写，用于判断新鲜度） |
-
-会话 Cookie **约 1~2 小时失效**，且接口轮询不会换发新票，因此**只能人工粘贴**：打开看板码道区块贴进去，服务端会当场实测并补签。
-
-## 6. `qoder.accounts[]` —— Qoder CN
+## 5. `qoder.accounts[]` —— Qoder CN
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
@@ -81,7 +69,7 @@
 
 ---
 
-## 7. `/health` 的可见字段（按鉴权分级）
+## 6. `/health` 的可见字段（按鉴权分级）
 
 `/health` **公网无鉴权**（应用卡片的静态预览要跨域读它），所以内容按调用方式分两级：
 
@@ -103,7 +91,6 @@
 | `TICK_MINUTES` | `60` | 主循环间隔；只影响"没签上时多久重试" |
 | `BUDDY_MINUTES` | `120` | WorkBuddy 猫猫检查间隔（最费接口） |
 | `BALANCE_MINUTES` | `360` | 余额查询间隔 |
-| `CODEARTS_PROBE_MINUTES` | `360` | 码道会话探针间隔。**注意语义**：默认 6 小时只是"健康检查"，不是保活——我们的实测认为接口轮询换不出新票据。社区有"压到 3 分钟能防闲置失效"的说法但未验证，可用 `scripts/codearts-keepalive-lab.cjs` 自己跑对照实验后再决定是否调小 |
 | `FALLBACK_AFTER_DAYS` | `7` | 兜底自刷的"上游多久没同步"阈值 |
 | `CONFIG_PATH` / `STATE_PATH` | 项目根 | 配置文件 / 状态文件路径 |
 | `CLOUD_BASE` | `http://127.0.0.1:$PORT` | 同步脚本的推送目标 |

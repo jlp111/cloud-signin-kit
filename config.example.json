@@ -41,16 +41,6 @@
       }
     ]
   },
-  "codearts": {
-    "_comment": "华为云码道（developcloud）：需要浏览器会话 Cookie，约 1~2 小时失效，只能人工粘贴。",
-    "accounts": [
-      {
-        "name": "码道-主号",
-        "cookie": "devclouddevuibjJ_SESSION_ID=REPLACE_WITH_SESSION_ID",
-        "sessionOkAt": null
-      }
-    ]
-  },
   "qoder": {
     "_comment": "Qoder CN（openapi.qoder.com.cn）：每日领取 additive credits。token 形如 dt-…；machineId 是设备身份，每个账号不同。",
     "accounts": [

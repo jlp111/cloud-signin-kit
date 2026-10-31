@@ -45,44 +45,7 @@ body 统一 `{req_source: 1}`（签到）或上面余额那条。
 | `9095` | 该设备**今日名额已被别的账号占用** | 标为"设备名额已占"，次日自动重试 |
 
 返回里 `credits` 与 `extra_credits` 是两个字段（如 100 + 100），本项目展示为**合计**（+200），避免看起来像重复计分。
-
----
-
-## 3. 码道 CodeArts（华为云 devcloud）
-
-| 用途 | 方法 & 路径 |
-|---|---|
-| 到访会话（触发签到 / 探活） | `GET https://devcloud.cn-north-4.huaweicloud.com/chat/PromptCenterService/v1/ops/delivery?channel=WEB` |
-
-凭据：**浏览器会话 Cookie**，硬要求两项 —— `devclouddevuibjJ_SESSION_ID`（HttpOnly 会话票据）与 `devclouddevuibjtcftk`（CSRF 令牌，会带进 `cftk` 请求头）。缺 `tcftk` 时接口多半回 SPA 的 HTML，表现为"Cookie 明明复制对了却一直失败"，所以粘贴时会直接拦下并说明缺哪个。另有 4 个 WAF/agency 类 Cookie（`HWWAFSESTIME`、`HWWAFSESID`、`devclouddevuibjagencyID`、`BENSESSCC_TAG`）只做提示，缺失通常仍可用。
-
-请求头（缺了会拿到 HTML 而不是 JSON）：`agent-type: PromptCenter`、`cftk: <tcftk 的值>`、`x-requested-with: XMLHttpRequest`、`language/x-language: zh-cn`、`referer: …/chat/home`。
-
-特性（实测）：
-- 有效窗口 **1~2 小时**；闲置约 30~60 分钟即可能被判失效，表现为 `DEV.00000001 Token missing`；
-- 接口轮询**不会**换发新票据（不是滑动续期），所以云端无法自愈；
-- 必须先人工登录一次并粘贴 Cookie；看板的码道区块提供粘贴框，服务端收到后当场实测并补签。
-
-### 「每 5 分钟探活能不能续命」——一个有争议的点，已备好实验
-
-- 我们的实测结论是**续不住**（探得再勤也换不出新票据），所以默认 `CODEARTS_PROBE_MINUTES=360`（6 小时）只是健康检查，不是保活。
-- 但社区里有另一种做法：把探活压到 **3 分钟**，并声称能避免闲置失效（见 [ACKNOWLEDGEMENTS.md 第十一节](../ACKNOWLEDGEMENTS.md) 的参考实现）。两边矛盾。
-
-⚠️ 因此这是一个**待实验证伪**的结论，不是既成事实。想自己得出答案：
-
-```bash
-# 用一个刚登录的 Cookie（只从文件读，不会进 shell 历史）
-node scripts/codearts-keepalive-lab.cjs --cookie=./hw-cookie.txt
-```
-
-脚本跑两组对照：**A 组每 5 分钟探一次 / B 组全程不探**，2 小时后给出四种结论之一（探活有效 / 探活非必要 / 探活无效 / 数据无效）。结论落 `hw-lab-result.json`（不含 Cookie 原文）。
-
-- 若实验证明**探活有效** → 把 `CODEARTS_PROBE_MINUTES` 调到 5，体验从"每天贴一次"变成"贴一次管很久"；
-- 若证明**探活无效** → 唯一的自动化路径是让一台机器用持久化浏览器 profile 定期重新登录换票（参考实现的做法），代价是那一台机器要常开。
-
----
-
-## 4. Qoder CN（openapi.qoder.com.cn）
+## 3. Qoder CN（openapi.qoder.com.cn）
 
 | 用途 | 方法 & 路径 |
 |---|---|
@@ -117,6 +80,5 @@ Cosy-MachineType: windows_x64
 | WorkBuddy | `scripts/magpie-auth.mjs --login workbuddy` | 填 `accessToken`(+`refreshToken`) |
 | Trae CN | `scripts/magpie-auth.mjs --login trae-cn` | 填 `access` + `deviceId` + `profile` |
 | Qoder CN | `scripts/magpie-auth.mjs --login qoder-cn` | 填 `token` + `machineId` |
-| 码道 | 无（平台机制限制） | 看板粘贴 Cookie |
 
 自动方式复用的是 [magpie](https://usemagpie.ai) 安装的 OpenCode 认证插件里**它自己的登录实现**（浏览器授权 → 回调 → 落盘），本项目只负责"发起授权 + 取回结果 + 推送"。

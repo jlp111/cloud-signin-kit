@@ -18,7 +18,7 @@
 无论 issue、PR 还是讨论区，**都不要**贴：
 
 - `accessToken` / `refreshToken` / `dt-` 开头的设备 token
-- 任何 Cookie（尤其 `devclouddevuibjJ_SESSION_ID`）
+- 任何 Cookie（会话票据一律视为敏感）
 - `machineId`、`deviceId`、uid
 - 完整 `config.json`、`state.json`、`.env`
 - 带 `key=` 的真实看板链接

@@ -5,14 +5,27 @@
 
 ## [未发布]
 
+### 移除
+
+- **整体移除码道 CodeArts 平台**。该平台的会话 Cookie 只能活 1~2 小时、且平台不换发票据，云端没有任何自愈手段，必须每天人工粘贴一次——这与"关掉电脑也能签"的核心定位直接冲突，因此不再维护。移除范围：
+  - 展示层：`PLATFORMS` 注册项与 `status()` 判定、看板「码道（华为 CodeArts）」专属表格、Cookie 粘贴框与其内联脚本、落地页告警种类 `codearts_auth`、`/health` 的 `codeartsSessionOkAt` 字段；
+  - 执行层：`codeartsRound()` 与 `hwApi` / `hwMergeSetCookie` / `hwFindDaily` 等协议实现、`tick()` 中的调用、`/probe` 的出网探测目标；
+  - 接口层：`POST /codearts-cookie` 端点；
+  - 数据层：`KIND_PLATFORM` 的 `codearts_*` 映射（漏改会让月度统计静默漏平台）、`config.codearts` 配置项、`state.codearts` 记录、`CODEARTS_PROBE_MINUTES` 环境变量、`.github` 的 issue 平台下拉项；
+  - 随之失去唯一消费者的三个纯函数 `hwCookieCheck()` / `parseCookieStr()` / `cookieToStr()` 与对应 13 条单测（含 `hwCookieCheck` 的 6 条、Cookie 解析的 7 条）；
+  - 实验脚本 `scripts/codearts-keepalive-lab.cjs` 及 `npm run lab:codearts`。
+
+- **升级须知**：旧 `config.json` 里残留的 `codearts` 段会被直接忽略（不报错、不影响启动），可自行删除；`state.json` 里残留的 `codearts` 记录同样被忽略。平台总数由四减为三：WorkBuddy / Trae CN / Qoder CN。
+- **`[1.0.0]` 段中的码道相关记录保留原样**——那是当时真实发布的形态，不修改历史。
+
 ### 修复
 
-- **Trae 跨零点假告警**：`status()` 缺"今天还没跑过"的分支，昨天 `claimed` 的记录在 00:00 后被判成失败，导致每天零点到当天首轮之间看板与战报必然报一次红叉（现在判为 `pending`，与码道 / Qoder 一致）。
+- **Trae 跨零点假告警**：`status()` 缺"今天还没跑过"的分支，昨天 `claimed` 的记录在 00:00 后被判成失败，导致每天零点到当天首轮之间看板与战报必然报一次红叉（现在判为 `pending`，与 Qoder 一致）。
 - **WorkBuddy「活动未开启」不再算已领**：原来直接写 `done=true`，当天彻底不再重试（活动一开就漏签这天），还会刷新 `lastOkAt` 掩盖 `business_stale`。现在写 `done=false, inactive=true`，看板显示"活动未开启（每轮重试）"。
 - **状态文件原子落盘**：`config.json` / `state.json` 一律「写临时文件再 rename」，进程被杀不会留下半截 JSON。临时文件名带 pid 与时间戳（`<文件>.tmp.<pid>.<ts>`）而非固定 `.tmp`——互斥之外仍有 fire-and-forget 的写入者会调 `saveState`，固定名会让两个写入者共用一个临时文件、rename 时互相踩空；rename 失败会删掉临时文件，不在目录里堆残留。
 - **state 解析失败不再静默归零**：只在文件不存在时当空态；解析失败会记日志并把坏文件备份成 `state.json.corrupt-<ts>`，避免"当天已签标记全丢、所有平台重打一遍接口"却查不到原因。
 - **进程内单一状态对象**：tick 与 HTTP 端点共用同一份 state，消除"各入口各自读快照、后写者整体覆盖前者"的丢更新（典型症状：看板粘 Cookie 补签成功后，被正在跑的 tick 回滚）。
-- **补跑互斥**：`/codearts-cookie`、`/qoder-cred` 触发的补跑撞上正在跑的一轮时不再并发执行，改为如实返回"已保存，正在跑一轮，稍后自动补签"。
+- **补跑互斥**：`/qoder-cred` 触发的补跑撞上正在跑的一轮时不再并发执行，改为如实返回"已保存，正在跑一轮，稍后自动补签"。
 - **云库事件不再因一次失败永久丢失**：`dbEventOnce()` 的返回值此前无人接收、`dbDay` 在请求发出前就被置真；现在只有落库成功才置真。
 - **Qoder `base` 校验统一**：`/qoder-cred` 与 `/sync-from-magpie` 走同一套校验（必须 https、无端口/路径/参数、非内网地址），杜绝把 `base` 当成"让服务端请求任意地址"的入口。
 - **请求体超限返回 413**：原来直接 `req.destroy()`，客户端只看到连接被重置。
@@ -20,11 +33,6 @@
 - **监听失败快速失败**：`server.listen` 的错误（如 `EADDRINUSE`）原来被 `uncaughtException` 兜住，进程"活着但根本没在监听"，调用方只能等到超时；现在打印 `HTTP 服务启动失败：<code> <message>` 并 `exit 1`。启动日志的端口改用 `server.address().port`，`PORT=0` 时输出内核分配的真实端口。
 
 ### 文档
-
-- **码道 Cookie 校验前置**：粘贴时要求 `SESSION_ID` + `tcftk` 两项硬要求（缺 `tcftk` 会拿到 SPA 的 HTML，表现为"Cookie 明明对却一直失败"），缺哪个直接报哪个；4 个 WAF/agency 类 Cookie 只提示不阻断。校验逻辑进 `src/lib.js` 的 `hwCookieCheck()`，配 6 条单测。
-- **码道失效提示说清边界**：原来只写"需重新导出 Cookie"，现在明确"需重新登录换新 Cookie；只读探活无法续发票据"，避免误以为是我们 bug。
-- **新增对照实验脚本** `scripts/codearts-keepalive-lab.cjs`：验证"每 5 分钟只读探活能否防止会话闲置失效"。分 A（每 5 分钟探）/B（全程不探）两组，单 Cookie 顺序跑、双 Cookie 并行跑，输出四选一结论。Cookie 只从文件读，结果文件不含 Cookie 原文。
-- **诚信修正**：`CODEARTS_PROBE_MINUTES` 的默认值 360 只是健康检查、不是保活；文档里不再暗示"探得勤能续住"，改为"待实验证伪"。参考实现（wangmingdong/workbuddy-signin）与我们的结论冲突，两边都写进 `docs/PLATFORMS.md` 与 `ACKNOWLEDGEMENTS.md` 第十一节。
 
 - **README 增加英文 TL;DR**：让不看中文的读者 3 秒内知道这是什么、为什么值得用。
 - **README 新增「常见问题」表**：解释 9074 / 9095 / 待重导 / 活动未开启 / corrupt 备份文件 / stale 等界面符号，减少无效 issue。
@@ -40,7 +48,7 @@
 
 ### 内部
 
-- 新增 `src/lib.js`（纯函数：日期 / Cookie 解析 / base 校验 / 状态判定），`server.js` 改为引用；新增 `scripts/unit-tests.cjs`（`node:assert`，零依赖，49 条），与 `src/lib.js` 语法检查一起接入 CI 三个 Node 版本矩阵。
+- 新增 `src/lib.js`（纯函数：日期 / base 校验 / 状态判定），`server.js` 改为引用；新增 `scripts/unit-tests.cjs`（`node:assert`，零依赖，42 条），与 `src/lib.js` 语法检查一起接入 CI 三个 Node 版本矩阵。
 - 删死代码：`maybeGrowthTasks`（无调用点，且其内部调用的 `runGrowthTasks` 全文不存在）。
 - `scripts/selftest.cjs` 加固：子进程 `PORT=0` 由内核分配端口、从启动日志解析真实端口（消除 Windows 上 `127.0.0.1` 探测能过但 `0.0.0.0` bind 被拒的竞态），并在监听失败时快速失败（exit 1）；新增鉴权矩阵（GET `/panel` `/log` `/digest` `/history` `/probe` 与 POST `/tick` `/refresh` 未授权必须 401）、未鉴权 `/health` 不含账号名、带 key 必须有 `rows`、超大 body 回 413、目录内无 `.tmp.*` 残留等断言。
 - `scripts/selftest.cjs` 的 `/health` 轮询抗抖动（并发负载下实测偶发假失败）：超时 20 秒 → 30 秒；每次请求单独加 5 秒超时——原来 `fetch` 无超时，一次连上却不回包就能把轮询整个卡死，次数上限根本轮不到；连接类错误（`ECONNREFUSED` / `ECONNRESET` / `ETIMEDOUT` / 超时 / `fetch failed`）继续重试并 400ms → 1s 退避，非连接类错误（状态码异常、响应体非 JSON）立即失败；失败输出带端口与最后一次错误的 `message` / `cause.code`。

@@ -17,7 +17,6 @@
 | `@magpie-community/opencode-workbuddy-auth` | 0.1.46 | WorkBuddy 浏览器登录与令牌续期；本项目据此对接 `workbuddy.cn` / `codebuddy.cn` 的签到与余额接口 | <https://github.com/magpie-community/plugins/tree/main/packages/workbuddy> | MIT（package.json 声明） |
 | `@magpie-community/opencode-trae-auth` | 0.2.25 | Trae CN 登录（本机 127.0.0.1 回调）、设备指纹与续期；`Cloud-IDE-JWT`、`x-device-*`、9074/9095 语义 | <https://github.com/magpie-community/plugins/tree/main/packages/trae> | MIT（package.json 声明） |
 | `@magpie-community/opencode-qoder-auth` | 0.2.48 | Qoder CN 的 PKCE 设备码登录、`Cosy-*` 请求头、活动/额度接口读法 | <https://github.com/magpie-community/plugins/tree/main/packages/qoder> | MIT（package.json 声明）；包内另附 `LICENSE-CLIProxyAPI`，见第三节 |
-| `opencode-codearts-auth`（`github:yuweihao17/codearts`） | — | 华为云码道的 OAuth（PKCE + DPoP）与 SDK-HMAC-SHA256 签名实现；本项目参考其会话/积分路径判断 | <https://github.com/yuweihao17/codearts> | MIT（package.json 声明） |
 
 ## 二、凭据来源工具
 
@@ -75,7 +74,6 @@
 |---|---|---|
 | WorkBuddy / CodeBuddy | 腾讯 | 签到、Buddy 旅行、余额（详见 `docs/PLATFORMS.md`） |
 | Trae CN | 字节跳动 | `checkin_credits/*`、`pay/ide_user_ent_usage` |
-| 码道 CodeArts | 华为云 | `PromptCenterService/v1/ops/delivery` |
 | Qoder CN | Qoder | `me/campaigns`、`quota/usage` |
 
 上述名称与商标归各自权利人所有；本项目与这些公司**没有隶属或背书关系**。
@@ -110,13 +108,3 @@
 
 许可证声明以**各包自己的 `package.json` / LICENSE 文件**为准；本页只做转述，不替代原文。
 若你是这些项目的作者而希望调整署名方式，请提 issue，我会按你的要求修改。
-
----
-
-## 十一、参考实现（设计思路借鉴，未复制代码）
-
-| 项目 | 我们借鉴了什么 | 来源 |
-|---|---|---|
-| **wangmingdong/workbuddy-signin** | 码道（华为云 devcloud）会话的**保活与换票思路**：① 会话闲置 30~60 分钟会失效；② 用持久化浏览器 profile 定期访问 `/chat/home`，让 SSO 自动签发新会话；③ 推送前必须用只读接口实测有效性，且**判据是响应体里的活动字段，不是 HTTP 200**；④ 必需 Cookie 不止 `SESSION_ID`，还要 `tcftk`（以及几个 WAF 类）| <https://github.com/wangmingdong/workbuddy-signin>（`huawei/hw_keeper.js`、`hw_autopush.py`、`hw_keepalive.py`）|
-
-本项目**没有复制**上述仓库的代码（它们是 Python + Playwright + SSH/SFTP 推送；我们是零依赖 Node + HTTP 端点热更新）。实际采纳的只有「Cookie 完整性校验（`SESSION_ID` + `tcftk`）」与「HTTP 200 ≠ 会话有效的判据」两条，其余作为**可选路径**记录在 `docs/PLATFORMS.md`，并用 `scripts/codearts-keepalive-lab.cjs` 做对照实验后再决定是否采纳。

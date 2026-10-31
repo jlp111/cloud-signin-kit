@@ -35,40 +35,6 @@ t('不传参时退化为当前时间（返回 10 位日期串）', () => {
 });
 
 // ---------------------------------------------------------------------------
-group('parseCookieStr / cookieToStr —— Cookie 串来回转换');
-t('base64 值里的 = 不被截断', () => {
-  const m = L.parseCookieStr('a=YWJjZA==; b=2');
-  assert.strictEqual(m.a, 'YWJjZA==');
-  assert.strictEqual(m.b, '2');
-});
-t('重复 key 后者胜', () => {
-  assert.strictEqual(L.parseCookieStr('k=1; k=2').k, '2');
-});
-t('k= 空值保留为空串', () => {
-  const m = L.parseCookieStr('k=; b=2');
-  assert.strictEqual(m.k, '');
-  assert.strictEqual(m.b, '2');
-});
-t('前导 = / 无 = 的片段被跳过', () => {
-  const m = L.parseCookieStr('=bad; noeq; good=1');
-  assert.deepStrictEqual(Object.keys(m), ['good']);
-});
-t('多余空格与空段被忽略', () => {
-  assert.deepStrictEqual(L.parseCookieStr('  a = 1 ;; b=2 ; '), { a: '1', b: '2' });
-});
-t('空串 / null / undefined 返回空对象', () => {
-  assert.deepStrictEqual(L.parseCookieStr(''), {});
-  assert.deepStrictEqual(L.parseCookieStr(null), {});
-  assert.deepStrictEqual(L.parseCookieStr(undefined), {});
-});
-t('parse → stringify → parse 幂等', () => {
-  const src = 'devclouddevuibjJ_SESSION_ID=abc==; devclouddevuibjtcftk=xyz; X=1';
-  const once = L.parseCookieStr(src);
-  const round = L.parseCookieStr(L.cookieToStr(once));
-  assert.deepStrictEqual(round, once);
-});
-
-// ---------------------------------------------------------------------------
 group('validBase —— 凭据里的 base 会直接拿去做请求，内网必须挡掉');
 const OK_BASES = [
   'https://openapi.qoder.com.cn',
@@ -169,46 +135,6 @@ t('今天查询/领取失败 → fail', () => {
 t('昨天领过、今天还没跑 → pending', () => {
   const st = { accounts: { a: { checkin: { day: '2026-10-28', done: true } } } };
   assert.strictEqual(L.statusWorkbuddy(st, { name: 'a' }, '2026-10-29').state, 'pending');
-});
-
-// ---------------------------------------------------------------------------
-group('hwCookieCheck —— 码道 Cookie 完整性（硬要求 SESSION_ID + tcftk）');
-
-t('两项都齐 → ok，无缺失', () => {
-  const r = L.hwCookieCheck('devclouddevuibjJ_SESSION_ID=abc; devclouddevuibjtcftk=tk; HWWAFSESID=w1; HWWAFSESTIME=1; devclouddevuibjagencyID=ag; BENSESSCC_TAG=b1');
-  assert.strictEqual(r.ok, true);
-  assert.deepStrictEqual(r.missing, []);
-  assert.deepStrictEqual(r.missingSoft, []);
-});
-
-t('缺 tcftk → 不 ok，且指出缺的是 tcftk', () => {
-  const r = L.hwCookieCheck('devclouddevuibjJ_SESSION_ID=abc');
-  assert.strictEqual(r.ok, false);
-  assert.deepStrictEqual(r.missing, ['devclouddevuibjtcftk']);
-  assert.strictEqual(r.hasSession, true);
-  assert.strictEqual(r.hasCftk, false);
-});
-
-t('缺 SESSION_ID → 不 ok', () => {
-  const r = L.hwCookieCheck('devclouddevuibjtcftk=tk');
-  assert.strictEqual(r.ok, false);
-  assert.deepStrictEqual(r.missing, ['devclouddevuibjJ_SESSION_ID']);
-});
-
-t('两个硬要求都缺 → 两条都报出来（便于一次说清）', () => {
-  const r = L.hwCookieCheck('foo=1');
-  assert.deepStrictEqual(r.missing, ['devclouddevuibjJ_SESSION_ID', 'devclouddevuibjtcftk']);
-});
-
-t('WAF/agency 缺失只进 missingSoft，不阻断', () => {
-  const r = L.hwCookieCheck('devclouddevuibjJ_SESSION_ID=abc; devclouddevuibjtcftk=tk');
-  assert.strictEqual(r.ok, true);
-  assert.deepStrictEqual(r.missingSoft, ['HWWAFSESTIME', 'HWWAFSESID', 'devclouddevuibjagencyID', 'BENSESSCC_TAG']);
-});
-
-t('空串/null 不抛异常', () => {
-  assert.strictEqual(L.hwCookieCheck('').ok, false);
-  assert.strictEqual(L.hwCookieCheck(null).ok, false);
 });
 
 // ---------------------------------------------------------------------------

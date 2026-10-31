@@ -11,23 +11,6 @@ function cnDateStr(ts) {
   return new Date(t + 8 * 3600 * 1000).toISOString().slice(0, 10);
 }
 
-// 'a=1; b=2' → { a:'1', b:'2' }
-// 用「第一个 '=' 的位置」切分：base64 值里的 '=' 填充不会被吃掉。
-function parseCookieStr(s) {
-  const m = {};
-  for (const part of String(s || '').split(';')) {
-    const i = part.indexOf('=');
-    if (i <= 0) continue;                     // 没有 '='，或 '=' 在最前面（空 key）
-    const k = part.slice(0, i).trim(), v = part.slice(i + 1).trim();
-    if (k) m[k] = v;
-  }
-  return m;
-}
-
-function cookieToStr(m) {
-  return Object.keys(m).map(k => k + '=' + m[k]).join('; ');
-}
-
 // 剩余天数（保留 1 位小数）。ms 为空返回 null，供看板显示 '—'。
 function daysLeft(ms, now) {
   const t = (typeof now === 'number' && Number.isFinite(now)) ? now : Date.now();
@@ -99,27 +82,7 @@ function statusTrae(st, a, today) {
   };
 }
 
-// 码道 Cookie 完整性检查（不联网，纯字符串判断）。
-// 硬要求两项：SESSION_ID（会话票据）+ tcftk（华为的 CSRF 令牌，会被带进 `cftk` 请求头，
-// 缺了接口多半返回 HTML/鉴权失败，用户会以为"cookie 是对的但就是不行"）。
-// 其余 WAF / agency 类 cookie 只做提示，不阻断 —— 实测缺它们往往仍可用。
-const HW_REQUIRED = ['devclouddevuibjJ_SESSION_ID', 'devclouddevuibjtcftk'];
-const HW_NICE_TO_HAVE = ['HWWAFSESTIME', 'HWWAFSESID', 'devclouddevuibjagencyID', 'BENSESSCC_TAG'];
-
-function hwCookieCheck(cookieStr) {
-  const m = parseCookieStr(cookieStr || '');
-  const missing = HW_REQUIRED.filter((k) => !m[k]);
-  const missingSoft = HW_NICE_TO_HAVE.filter((k) => !m[k]);
-  return {
-    ok: missing.length === 0,
-    missing,
-    missingSoft,
-    hasSession: !!m[HW_REQUIRED[0]],
-    hasCftk: !!m[HW_REQUIRED[1]],
-  };
-}
-
 module.exports = {
-  cnDateStr, parseCookieStr, cookieToStr, daysLeft, validBase,
-  isPrivateHost, statusWorkbuddy, statusTrae, hwCookieCheck,
+  cnDateStr, daysLeft, validBase,
+  isPrivateHost, statusWorkbuddy, statusTrae,
 };
